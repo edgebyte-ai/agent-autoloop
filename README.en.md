@@ -206,6 +206,8 @@ Agents that speak ACP connect with `use: "acp"` and can go on in the same sessio
 
 **Write your own.** Start from the runnable [agent](examples/plugins/hello-agent/agent.ts), [channel](examples/plugins/hello-channel/channel.ts), and [event](examples/plugins/hello-source/source.ts) templates and the [plugin guide](docs/plugins.md). For web tasks, read [browser access](docs/plugins.md#浏览器接入) first. The CLI and [MCP](skills/agent-autoloop/SKILL.md#mcp-与密钥撤销) can also inspect and answer cards.
 
+**Connect MCP directly to the hub.** The running hub serves Streamable HTTP at `/mcp` on its existing port. Configure the hub URL and an owner or source Bearer key in the client; SSH and local source code are not required. Tools inspect, answer, start, and control existing workflows. Installation, rule changes, and project files still use commands. The stdio entry point remains available. See the [MCP configuration example](skills/agent-autoloop/references/mcp.md).
+
 ## Four kernel mechanisms
 
 The kernel has zero runtime dependencies. It reads no clock, uses no randomness, and makes no outbound requests; plugins connect in, and credentials stay with the plugins that use them. Identical inputs always give identical results. It brings four proven systems patterns to command-line agents:

@@ -4,6 +4,7 @@ import { realpathSync, watch } from "node:fs";
 import { basename, dirname } from "node:path";
 import { RULES_FILE } from "./home.ts";
 import { loadPlugin } from "./plugins.ts";
+import { mcpHttp } from "./mcp.ts";
 import * as hub from "./runtime.ts";
 import { AuthError, NotFound } from "../kernel/errors.ts";
 import { createHandler } from "../kernel/http.ts";
@@ -139,7 +140,11 @@ export function makeHandler(commit = "dev") {
   });
   fire();
   return {
-    handle,
+    handle(request: Request) {
+      return new URL(request.url).pathname === "/mcp"
+        ? mcpHttp(request, handle, hub.whose, hub.environment.publicUrl)
+        : handle(request);
+    },
     close() {
       closed = true;
       clearTimeout(timer);

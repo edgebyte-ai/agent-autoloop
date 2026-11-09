@@ -205,7 +205,7 @@ POST /v1/workflows/<工作项编号>/cancel  {"reason":"目标撤回"}
 
 worker 用该 run 的 token 调用 `POST /v1/runs/<run>/workflow`，上报步骤开始、实际进展与结果，并领取下一批已准入步骤。其他 run 的 token 无权操作这个工作项。
 
-MCP 对应 `workflow_list`、`workflow_show`、`workflow_start`、`workflow_pause`、`workflow_resume`、`workflow_cancel`。这些工具使用本机已有的本人身份，不自动增加权限。不要把本人 MCP 配进执行任务的 Agent 用户级配置。
+MCP 对应 `workflow_list`、`workflow_show`、`workflow_start`、`workflow_pause`、`workflow_resume`、`workflow_cancel`，都要求本人身份。客户端可通过中台同端口的 `/mcp` 使用 Streamable HTTP 与 Bearer 密钥直接连接；stdio 使用本机配置的身份。工具不自动增加权限，连接示例见 [MCP 操作手册](../skills/agent-autoloop/references/mcp.md)。不要把本人 MCP 配进执行任务的 Agent 用户级配置。
 
 完整数据约定见[协议](protocol.md)，插件生命周期见[插件开发说明](plugins.md#常驻-agent)。
 

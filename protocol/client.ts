@@ -10,14 +10,14 @@ export class HubError extends Error {
   }
 }
 
-export function hubClient(url: string, key: string) {
+export function hubClient(url: string, key: string, request: typeof fetch = fetch) {
   const base = url.replace(/\/$/, "");
   async function call(
     method: string,
     path: string,
     { token = key, body, timeout = 30 }: { token?: string; body?: unknown; timeout?: number } = {},
   ) {
-    const response = await fetch(base + path, {
+    const response = await request(base + path, {
       method,
       headers: { authorization: `Bearer ${token}`, ...(body !== undefined && { "content-type": "application/json" }) },
       ...(body !== undefined && { body: JSON.stringify(body) }),

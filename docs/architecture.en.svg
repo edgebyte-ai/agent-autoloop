@@ -149,7 +149,7 @@ text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK S
 <path class="both" d="M388 498H328"/>
 <rect class="you" x="172" y="454" width="152" height="88" rx="26"/>
 <text x="248" y="493" class="you-t" text-anchor="middle">You</text>
-<text x="248" y="517" class="you-s" text-anchor="middle">Just make the call</text>
+<text x="248" y="517" class="you-s" text-anchor="middle">Cards · CLI · MCP</text>
 
 <!-- 5: answer -> back to kernel -->
 <path class="conn" d="M248 452V410H400V386"/>

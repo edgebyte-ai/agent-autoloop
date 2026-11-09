@@ -204,6 +204,8 @@ agent-autoloop workflow cancel <工作项编号>
 
 **写自己的插件。** 从 [Agent](examples/plugins/hello-agent/agent.ts)、[通道](examples/plugins/hello-channel/channel.ts)、[事件](examples/plugins/hello-source/source.ts) 三个可运行的最小模板开始，见[插件开发说明](docs/plugins.md)。要让 Agent 操作网页，先看[浏览器接入](docs/plugins.md#浏览器接入)。命令行和 [MCP](skills/agent-autoloop/SKILL.md#mcp-与密钥撤销) 也能查看和回答卡片。
 
+**MCP 直接连中台。** 启动后，同端口的 `/mcp` 提供 Streamable HTTP，客户端填写中台 URL 和本人或来源的 Bearer 密钥即可连接，不需要 SSH 或本机源码。可查询、回答、启动和控制已有工作流；安装、改规则和创建项目文件仍用命令。现有 stdio 入口保留，见 [MCP 配置示例](skills/agent-autoloop/references/mcp.md)。
+
 ## 内核的四个机制
 
 内核没有运行时依赖。它不读系统时钟、不用随机数、不向外发请求，插件主动连进来，账号凭据留在各自的插件里；同样的输入永远得出同样的结果。它把四个计算机领域的成熟做法用到了命令行 Agent 上：

@@ -11,7 +11,7 @@ description: 安装和操作 Agent Autoloop：从已有程序包部署中台和 
 
 - `references/` 相对于本次加载的 `SKILL.md` 所在目录，不相对于当前工作目录。只在 Skill 内查找这些操作手册。
 - 程序、配置和项目路径属于对应的中台或 worker。默认程序目录是目标机器的 `~/.agent-autoloop/app`，数据目录是 `~/.agent-autoloop`；规则是中台数据目录的 `rules.json`，本机身份在各机器自己的 `config.json`。用户指定其他目录时沿用它。
-- 操作机只有 Skill 时，通过用户授权的 SSH 或远程执行入口，在中台运行管理命令，在 worker 运行项目和环境命令。不要为了操作中台，在操作机克隆源码或复制中台管理密钥。缺少远程入口时只问连接信息。
+- 操作机只有 Skill 时，日常管理优先用已接入的中台 MCP 工具，连接方法见 [MCP 直连](references/mcp.md)。安装、改规则和创建项目文件仍通过用户授权的 SSH 或远程执行入口完成。不要为了操作中台在操作机克隆源码；MCP 的访问密钥交给客户端的凭据设置，不写进提示词。只补问本次缺少的连接信息。
 - 普通安装、新建项目、定制工作流、启动任务、查进度、回答和停止，都不需要读协议全文；接单 Agent 按 worker 提供的当前步骤与回执要求执行，也不需要读全文。
 - 只有直接开发 HTTP 客户端、插件或核对接口字段时，才按需读取匹配运行版本的协议章节。默认位置是中台程序目录下的 `docs/protocol.md`，例如中台上的 `~/.agent-autoloop/app/docs/protocol.md`。这不是操作机当前项目的 `docs/`，也不是本 Skill 的必需文件。
 
@@ -234,9 +234,11 @@ Claude 主任务要委托 Codex 操作网页时，从 `examples/recipes/browser-
 
 ## MCP 与密钥撤销
 
-MCP 客户端的启动程序填 `node`，参数为本机引擎绝对路径 `bin/agent-autoloop.ts`、`mcp`，环境里传 `AGENT_AUTOLOOP_HOME`。支持 stdio 2025-11-25 版，使用本机 `config.json` 已有密钥，不把密钥写进客户端参数。工具按已有身份显示；不自动创建权限。
+中台启动后在同一地址的 `/mcp` 提供 Streamable HTTP MCP，支持 2025-11-25 版。客户端用 URL 和 Bearer 密钥直接连接，不需要 SSH、本机程序或源码。配置示例、工具范围与请求头见随 Skill 分发的 [MCP 直连](references/mcp.md)。已有 MCP 工具时直接调用；下文 CLI 示例对应同一组业务操作。
 
-MCP 服务不区分调用方，都按本人记录（`answer` 记成本人，`emit` 不带层数）。不要把它配进接单程序启动的 CLI 的用户级配置，否则一轮能自己回答自己的卡片。
+现有 `agent-autoloop mcp` 继续提供 stdio：客户端启动 `node`，参数为该机器程序的 `bin/agent-autoloop.ts` 完整路径和 `mcp`，环境里传 `AGENT_AUTOLOOP_HOME`，使用该机器 `config.json` 已有身份。HTTP 入口只用请求携带的身份，不借用服务器自己的管理密钥。
+
+不要把本人管理 MCP 配进接单程序启动的 CLI，否则一轮能自己回答自己的卡片。本人回答仍记为本人；来源只能以自己的名义发事件和通知。
 
 工作流工具为 `workflow_list`、`workflow_show`、`workflow_start`、`workflow_pause`、`workflow_resume` 和 `workflow_cancel`，只向已有本人身份开放。`workflow_start` 按规则名启动，查询与控制按工作项编号调用。取消返回的是请求；用 `workflow_show` 核对实际执行是否结束。
 

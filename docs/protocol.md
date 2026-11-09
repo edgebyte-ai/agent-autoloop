@@ -504,7 +504,18 @@ Node 请求转换层只把 Node 的请求变成 Request；文件、SQLite 连接
 
 权限只选一次性的选项：`read` 允许结构化的读和搜索，`edit` 再允许工作目录内的编辑（核对符号链接，经过找不到目标的链接算在目录外），`full` 允许其他操作。权限请求只带工具调用编号时，按这次调用之前说过的种类和路径判断，请求自己带的字段优先。未提供相应选项就取消。权限依赖 Agent 遵守 ACP，不提供额外的系统隔离；规范允许 Agent 不询问就执行，这种操作 `access` 拦不住，要用 Agent 自己的模式限制。官方 Codex 适配器给的拒绝选项（`reject_once`）只有 `cancel`，选了它整轮以 `stopReason: cancelled` 结束，算没跑成，由中台重派；`read`、`edit` 档下要跑命令的请求就是这样回来的，所以 Agent 非跑命令不可时，给 `full` 或用它自己的模式。`model`、`effort` 不生效。核对依据：[初始化](https://agentclientprotocol.com/protocol/v1/initialization)、[会话](https://agentclientprotocol.com/protocol/v1/session-setup)、[工具权限](https://agentclientprotocol.com/protocol/v1/tool-calls)。
 
-`agent-autoloop mcp` 提供 stdio MCP，固定支持 [2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) 版，不支持 2026-07-28 的无握手协议。工具为 `status`、`why`、`answer`、`resolve`、`stop`、`emit`、`tell`；按本机已有的本人或来源密钥展示工具。它调用同样的 HTTP 接口，不直接改数据库；密钥留在本机 `config.json`。MCP 客户端把程序设为 `node`，参数设为引擎的绝对路径 `bin/agent-autoloop.ts` 和 `mcp`，环境里指定 `AGENT_AUTOLOOP_HOME`。标准输出只写 JSON-RPC。消息只按换行分帧；每个工具调用各自回复，慢调用不挡 `ping`。它不区分调用方，都按本人记录（`answer` 记成本人，`emit` 不带层数），不要配进接单程序启动的 CLI 的用户级配置，否则一轮能自己回答自己的卡片。
+MCP 固定支持 [2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) 版，不支持 2026-07-28 的无握手协议。两种传输共用工具和原 `/v1` 业务接口，不直接改数据库。
+
+- **stdio**：`agent-autoloop mcp` 使用本机 `config.json` 中已有的本人或来源身份。客户端启动 `node`，参数为程序的 `bin/agent-autoloop.ts` 完整路径和 `mcp`，环境里指定 `AGENT_AUTOLOOP_HOME`。标准输出只写 JSON-RPC，消息按换行分帧；每个工具调用各自回复，慢调用不挡 `ping`。
+- **Streamable HTTP**：中台启动时在同一监听端口提供 `/mcp`，不需要单独启动进程。客户端每次用 `Authorization: Bearer <访问密钥>` 提供本人或来源身份；不使用服务器本机配置的管理密钥。只有 worker、通道或轮次 token 的请求返回 401。密钥撤销后，下次请求立即拒绝。
+
+本人提供 `status`、`why`、`answer`、`resolve`、`stop`、`workflow_list`、`workflow_show`、`workflow_start`、`workflow_pause`、`workflow_resume`、`workflow_cancel`；来源提供 `emit`、`tell`，只以自己的名义执行。HTTP 的本人密钥不能使用来源工具。`answer.choice` 从 0 开始。安装、文件编辑和修改规则不属于 MCP 工具。
+
+HTTP 按 [Streamable HTTP 规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http) 接受单条 JSON-RPC 消息：POST 的 `Content-Type` 为 `application/json`，`Accept` 同时包含 `application/json`、`text/event-stream`。先发 `initialize`，后续请求带 `MCP-Protocol-Version: 2025-11-25`；不支持的版本返回 400。成功请求返回单个 JSON 对象；通知和客户端响应返回空的 202。请求体最多 1 MiB，超过返回 413；批量请求不接受。该入口无会话状态，不发 `Mcp-Session-Id`，不提供独立 SSE 流，GET、DELETE 返回 405；不实现旧 HTTP+SSE。HTTP 断开不等于取消业务，用取消工具显式请求停止。
+
+携带 `Origin` 时，只接受 `hub.publicUrl` 的 origin，没配时使用监听地址；不依据请求的 Host 放行其他 origin，也不开放跨域浏览器访问。无 Origin 的客户端可用 Bearer 密钥连接。客户端应支持预配置认证请求头，当前没有 OAuth 登录；跨不可信网络使用 HTTPS 或加密隧道。完整客户端配置见 [MCP 操作手册](../skills/agent-autoloop/references/mcp.md)。
+
+本人回答仍记为本人，来源事件不带 worker 的层数。不要把本人管理 MCP 配进接单程序启动的 Agent，否则一轮能自己回答自己的卡片。新增 HTTP 传输是兼容扩展；现有 stdio、规则、`/v1` 和插件入口不变。
 
 ### 通道模板与命令行示例
 
@@ -535,7 +546,7 @@ Windows 普通执行由独立 Node 监督进程保存输出和退出码，PowerS
 | 目录                                                     | 职责                                                                    |
 | -------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `kernel/`                                                | 确定性决策、演进、日志、到期、规则匹配、请求处理、卡片表单              |
-| `host/`                                                  | Node HTTP、文件与 SQLite 连接、时钟、配置、状态汇总、后台服务和插件加载 |
+| `host/`                                                  | Node HTTP、MCP 传输、文件与 SQLite 连接、时钟、配置、后台服务和插件加载 |
 | `protocol/`                                              | 类型、JSON Schema、输入校验、HTTP 客户端与一致性检查                    |
 | `worker/`                                                | 接单、Agent 进程、心跳与停止、回执读取和提交                            |
 | `cli/`、`bin/`                                           | 用户命令、MCP 与命令行启动入口                                          |
