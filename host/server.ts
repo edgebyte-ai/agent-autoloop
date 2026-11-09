@@ -4,7 +4,7 @@ import { realpathSync, watch } from "node:fs";
 import { basename, dirname } from "node:path";
 import { RULES_FILE } from "./home.ts";
 import { loadPlugin } from "./plugins.ts";
-import { mcpHttp } from "./mcp.ts";
+import { createMcpHttp } from "./mcp.ts";
 import * as hub from "./runtime.ts";
 import { AuthError, NotFound } from "../kernel/errors.ts";
 import { createHandler } from "../kernel/http.ts";
@@ -103,6 +103,8 @@ export function makeHandler(commit = "dev") {
     // Being seen wakes nobody, unless it changed a card.
     const justSeen = type === "heartbeat" || type === "channelSeen";
     if (!justSeen || facts.some((fact) => fact.changes.some((change) => change.table === "cards"))) wake();
+    if (type === "removeKey" || facts.some((fact) => fact.changes.some((change) => change.table === "cards")))
+      mcp.refresh();
     arm();
   });
   // libuv 1.52 (Node 24.16+) on Windows asserts and exits on the first change in a folder named through an 8.3 short name.
@@ -138,16 +140,16 @@ export function makeHandler(commit = "dev") {
     stream: logStream,
     adapt: adaptWebhook,
   });
+  const mcp = createMcpHttp(handle, hub.whose, hub.environment.publicUrl, () => hub.stateOf(Date.now()));
   fire();
   return {
     handle(request: Request) {
-      return new URL(request.url).pathname === "/mcp"
-        ? mcpHttp(request, handle, hub.whose, hub.environment.publicUrl)
-        : handle(request);
+      return new URL(request.url).pathname === "/mcp" ? mcp.handle(request) : handle(request);
     },
     close() {
       closed = true;
       clearTimeout(timer);
+      mcp.close();
       watcher.close();
       unlisten();
       wake();

@@ -1,4 +1,6 @@
 // Both MCP transports expose the same typed operations and leave business decisions to the hub HTTP API.
+import { randomUUID } from "node:crypto";
+import type { Card } from "./channels.ts";
 import { versionName } from "./version.ts";
 import { hubClient, type Hub } from "../protocol/client.ts";
 
@@ -141,70 +143,295 @@ export function createMcp(identity: Identity, client: (key: string) => Hub) {
 
 type Handle = (request: Request) => Promise<Response>;
 
-export async function mcpHttp(
-  request: Request,
+type Snapshot = { cards: Card[]; recentCards: Card[] };
+type Session = {
+  key: string;
+  ready: boolean;
+  seen: Map<number, number>;
+  pending: Map<string, Card>;
+  replies: Map<string, string>;
+  send?: (message: object) => void;
+  stop?: () => void;
+  expires?: NodeJS.Timeout;
+};
+
+/** Sessions retain only transport state; open cards and accepted answers always come from the hub. */
+export function createMcpHttp(
   handle: Handle,
   whose: (kind: string, key: string) => string | null,
   publicUrl: string,
+  snapshot: () => Snapshot,
 ) {
-  const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
-    Response.json(body, { status, headers: { "cache-control": "no-store", ...headers } });
-  const key = request.headers.get("authorization")?.match(/^Bearer (.+)$/i)?.[1] ?? "";
-  const owner = whose("owner", key);
-  const source = owner ? null : whose("source", key);
-  if (!owner && !source) return json({ error: "要本人或来源自己的密钥" }, 401, { "www-authenticate": "Bearer" });
-  const origin = request.headers.get("origin");
-  if (origin !== null && origin !== new URL(publicUrl).origin) return json({ error: "不允许这个 Origin" }, 403);
-  if (request.method !== "POST") return json({ error: "这个 MCP 入口只接受 POST" }, 405, { allow: "POST" });
-  const version = request.headers.get("mcp-protocol-version");
-  if (version !== null && version !== MCP_VERSION) return json({ error: "不支持这个 MCP 协议版本" }, 400);
-  if (request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
-    return json({ error: "Content-Type 要是 application/json" }, 415);
+  const sessions = new Map<string, Session>();
+  const encoder = new TextEncoder();
+  const client = (key: string) => hubClient("http://hub", key, (input, init) => handle(new Request(input, init)));
+  function remove(id: string) {
+    const session = sessions.get(id);
+    if (!session) return;
+    session.stop?.();
+    clearTimeout(session.expires);
+    sessions.delete(id);
   }
-  const accept = request.headers
-    .get("accept")
-    ?.split(",")
-    .map((part) => part.split(";", 1)[0].trim());
-  if (!accept?.includes("application/json") || !accept.includes("text/event-stream")) {
-    return json({ error: "Accept 要包含 application/json 和 text/event-stream" }, 406);
+  function cancel(session: Session, id: string) {
+    session.send?.({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: id, reason: "卡片已更新或回答" },
+    });
+    session.pending.delete(id);
+    session.replies.set(id, "");
   }
-  const limit = 1024 * 1024;
-  if (Number(request.headers.get("content-length")) > 8 * limit) return json({ error: "请求最多 1024 KB" }, 413);
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  const reader = request.body?.getReader();
-  if (reader) {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.length;
-      // Drain modest excess so closing the unread upload does not reset the client's 413 response.
-      if (size > 8 * limit) return json({ error: "请求最多 1024 KB" }, 413);
-      if (size <= limit) chunks.push(value);
+  function sync(session: Session, state: Snapshot) {
+    if (!session.ready || !session.send) return;
+    const cards = [...state.cards, ...state.recentCards];
+    const visible = new Map(cards.map((card) => [card.id, card]));
+    for (const [id, card] of session.pending) {
+      const current = visible.get(card.id);
+      if (!current || current.state !== "open" || current.version !== card.version) cancel(session, id);
+    }
+    for (const card of cards) {
+      if (session.seen.get(card.id) === card.version) continue;
+      session.seen.set(card.id, card.version);
+      if (card.state !== "open") {
+        session.send({
+          jsonrpc: "2.0",
+          method: "notifications/message",
+          params: { level: "notice", logger: "cards", data: card },
+        });
+        continue;
+      }
+      const id = randomUUID();
+      session.pending.set(id, card);
+      const text = { type: "string", title: "补充文字", maxLength: 4000 };
+      const properties =
+        card.kind === "ask"
+          ? {
+              choice: {
+                type: "string",
+                title: "请选择",
+                oneOf: [
+                  ...card.options.map((title, index) => ({ const: String(index), title })),
+                  { const: "free", title: "用文字回答" },
+                ],
+                ...(card.recommend !== null && { default: String(card.recommend) }),
+              },
+              text,
+            }
+          : { ack: { type: "boolean", title: "已处理" }, text };
+      session.send({
+        jsonrpc: "2.0",
+        id,
+        method: "elicitation/create",
+        params: {
+          mode: "form",
+          message: `中台卡片 #${card.id}：${card.title}\n${card.text}`,
+          requestedSchema: { type: "object", properties, required: [card.kind === "ask" ? "choice" : "ack"] },
+        },
+      });
+    }
+    for (const id of session.seen.keys()) if (!visible.has(id)) session.seen.delete(id);
+  }
+  function refresh() {
+    let state: Snapshot | undefined;
+    for (const [id, session] of sessions) {
+      if (!whose("owner", session.key)) {
+        remove(id);
+        continue;
+      }
+      if (session.send && session.ready) sync(session, (state ??= snapshot()));
     }
   }
-  if (size > limit) return json({ error: "请求最多 1024 KB" }, 413);
-  let message: any;
-  try {
-    message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    return json(mcpError(null, -32700, "不是 JSON"), 400);
+  function openStream(session: Session, signal: AbortSignal) {
+    session.stop?.();
+    clearTimeout(session.expires);
+    let cancelled = () => {};
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        let closed = false;
+        const finish = (close: boolean) => {
+          if (closed) return;
+          closed = true;
+          signal.removeEventListener("abort", stop);
+          session.send = undefined;
+          session.stop = undefined;
+          if (close) controller.close();
+          // HTTP MCP permits session expiry; keep a disconnected client long enough to reconnect.
+          session.expires = setTimeout(() => {
+            for (const [id, saved] of sessions) if (saved === session) remove(id);
+          }, 30 * 60_000).unref();
+        };
+        const stop = () => finish(true);
+        cancelled = () => finish(false);
+        session.stop = stop;
+        session.send = (message) =>
+          controller.enqueue(encoder.encode(`event: message\ndata: ${JSON.stringify(message)}\n\n`));
+        signal.addEventListener("abort", stop, { once: true });
+        controller.enqueue(encoder.encode(": connected\n\n"));
+        for (const id of session.pending.keys()) cancel(session, id);
+        session.seen.clear();
+        if (signal.aborted) stop();
+        else sync(session, snapshot());
+      },
+      cancel() {
+        cancelled();
+      },
+    });
+    return new Response(body, {
+      headers: { "content-type": "text/event-stream", "cache-control": "no-store", "x-accel-buffering": "no" },
+    });
   }
-  if (version === null && message?.method !== "initialize") {
-    return json({ error: "要提供 MCP-Protocol-Version: 2025-11-25" }, 400);
-  }
-  if (
-    message?.jsonrpc === "2.0" &&
-    message.method === undefined &&
-    (typeof message.id === "string" || typeof message.id === "number") &&
-    Object.hasOwn(message, "result") !== Object.hasOwn(message, "error")
-  )
+  async function respond(session: Session, message: any) {
+    const id = message.id;
+    const encoded = JSON.stringify(message);
+    const saved = session.replies.get(id);
+    const error = (status: number, text: string) => Response.json({ error: text }, { status });
+    if (saved !== undefined)
+      return saved === "" || saved === encoded
+        ? new Response(null, { status: 202 })
+        : error(409, "同一次提问不能换一个回答");
+    const card = session.pending.get(id);
+    if (!card) return error(400, "不是发给本客户端的提问");
+    const result = message.result;
+    if (message.error || result?.action === "decline" || result?.action === "cancel") {
+      session.pending.delete(id);
+      session.replies.set(id, encoded);
+      return new Response(null, { status: 202 });
+    }
+    const content = result?.content;
+    const allowed = card.kind === "ask" ? ["choice", "text"] : ["ack", "text"];
+    if (
+      result?.action !== "accept" ||
+      !content ||
+      typeof content !== "object" ||
+      Array.isArray(content) ||
+      Object.keys(content).some((key) => !allowed.includes(key)) ||
+      (content.text !== undefined && typeof content.text !== "string")
+    )
+      return error(400, "卡片回答格式不正确");
+    let given: { choice?: number; text?: string };
+    if (card.kind === "ask") {
+      if (content.choice === "free") {
+        if (!content.text?.trim()) return error(400, "文字回答不能为空");
+        given = { text: content.text };
+      } else {
+        const choice = card.options.findIndex((_option, index) => String(index) === content.choice);
+        if (choice < 0) return error(400, "没有这个选项");
+        given = { choice, ...(content.text !== undefined && { text: content.text }) };
+      }
+    } else {
+      if (content.ack !== true) return error(400, "未确认已处理");
+      given = { ...(content.text !== undefined && { text: content.text }) };
+    }
+    try {
+      await client(session.key).answer(card.id, given);
+    } catch (failure) {
+      return error(400, (failure as Error).message);
+    }
+    session.pending.delete(id);
+    session.replies.set(id, encoded);
     return new Response(null, { status: 202 });
-  const identity = owner ? { owner: key } : { source: { key } };
-  // Stay on the existing API without connecting back over the network or trusting the incoming Host header.
-  const answer = await createMcp(identity, (token) =>
-    hubClient("http://hub", token, (input, init) => handle(new Request(input, init))),
-  )(message);
-  if (!answer) return new Response(null, { status: 202 });
-  return json(answer, "error" in answer && answer.error.code === -32600 ? 400 : 200);
+  }
+  return {
+    refresh,
+    close() {
+      for (const id of sessions.keys()) remove(id);
+    },
+    async handle(request: Request) {
+      const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+        Response.json(body, { status, headers: { "cache-control": "no-store", ...headers } });
+      const key = request.headers.get("authorization")?.match(/^Bearer (.+)$/i)?.[1] ?? "";
+      const owner = whose("owner", key);
+      const source = owner ? null : whose("source", key);
+      if (!owner && !source) return json({ error: "要本人或来源自己的密钥" }, 401, { "www-authenticate": "Bearer" });
+      const origin = request.headers.get("origin");
+      if (origin !== null && origin !== new URL(publicUrl).origin) return json({ error: "不允许这个 Origin" }, 403);
+      const sessionId = request.headers.get("mcp-session-id");
+      const session = sessionId ? sessions.get(sessionId) : undefined;
+      if (sessionId && (!session || session.key !== key)) return json({ error: "没有这个 MCP 会话" }, 404);
+      const version = request.headers.get("mcp-protocol-version");
+      if (version !== null && version !== MCP_VERSION) return json({ error: "不支持这个 MCP 协议版本" }, 400);
+      if (request.method === "GET" && session) {
+        if (version !== MCP_VERSION) return json({ error: "要提供 MCP-Protocol-Version" }, 400);
+        if (!request.headers.get("accept")?.includes("text/event-stream"))
+          return json({ error: "Accept 要包含 text/event-stream" }, 406);
+        return openStream(session, request.signal);
+      }
+      if (request.method === "DELETE" && sessionId) {
+        remove(sessionId);
+        return new Response(null, { status: 204 });
+      }
+      if (request.method !== "POST") return json({ error: "这个 MCP 入口只接受 POST" }, 405, { allow: "POST" });
+      if (request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+        return json({ error: "Content-Type 要是 application/json" }, 415);
+      }
+      const accept = request.headers
+        .get("accept")
+        ?.split(",")
+        .map((part) => part.split(";", 1)[0].trim());
+      if (!accept?.includes("application/json") || !accept.includes("text/event-stream")) {
+        return json({ error: "Accept 要包含 application/json 和 text/event-stream" }, 406);
+      }
+      const limit = 1024 * 1024;
+      if (Number(request.headers.get("content-length")) > 8 * limit) return json({ error: "请求最多 1024 KB" }, 413);
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      const reader = request.body?.getReader();
+      if (reader) {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.length;
+          // Drain modest excess so closing the unread upload does not reset the client's 413 response.
+          if (size > 8 * limit) return json({ error: "请求最多 1024 KB" }, 413);
+          if (size <= limit) chunks.push(value);
+        }
+      }
+      if (size > limit) return json({ error: "请求最多 1024 KB" }, 413);
+      let message: any;
+      try {
+        message = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        return json(mcpError(null, -32700, "不是 JSON"), 400);
+      }
+      if (version === null && message?.method !== "initialize") {
+        return json({ error: "要提供 MCP-Protocol-Version: 2025-11-25" }, 400);
+      }
+      if (
+        message?.jsonrpc === "2.0" &&
+        message.method === undefined &&
+        (typeof message.id === "string" || typeof message.id === "number") &&
+        Object.hasOwn(message, "result") !== Object.hasOwn(message, "error")
+      ) {
+        if (!session) return new Response(null, { status: 202 });
+        return respond(session, message);
+      }
+      if (session && message?.method === "notifications/initialized") {
+        session.ready = true;
+        sync(session, snapshot());
+      }
+      const identity = owner ? { owner: key } : { source: { key } };
+      // Stay on the existing API without connecting back over the network or trusting the incoming Host header.
+      const answer = await createMcp(identity, (token) =>
+        hubClient("http://hub", token, (input, init) => handle(new Request(input, init))),
+      )(message);
+      if (!answer) return new Response(null, { status: 202 });
+      const elicitation = message?.params?.capabilities?.elicitation;
+      const supportsForm =
+        elicitation &&
+        typeof elicitation === "object" &&
+        !Array.isArray(elicitation) &&
+        (Object.keys(elicitation).length === 0 || (elicitation.form && typeof elicitation.form === "object"));
+      if (!sessionId && owner && message.method === "initialize" && supportsForm && "result" in answer) {
+        const id = randomUUID();
+        sessions.set(id, { key, ready: false, seen: new Map(), pending: new Map(), replies: new Map() });
+        Object.assign(answer.result, {
+          capabilities: { tools: {}, logging: {} },
+          instructions:
+            "本客户端已注册接收中台卡片。用户通过 Elicitation 表单回答，只有实际提交的回答生效。无需调用等待工具；不要替用户自动回答卡片。",
+        });
+        return json(answer, 200, { "mcp-session-id": id });
+      }
+      return json(answer, "error" in answer && answer.error.code === -32600 ? 400 : 200);
+    },
+  };
 }

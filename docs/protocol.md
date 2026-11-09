@@ -511,11 +511,17 @@ MCP 固定支持 [2025-11-25](https://modelcontextprotocol.io/specification/2025
 
 本人提供 `status`、`why`、`answer`、`resolve`、`stop`、`workflow_list`、`workflow_show`、`workflow_start`、`workflow_pause`、`workflow_resume`、`workflow_cancel`；来源提供 `emit`、`tell`，只以自己的名义执行。HTTP 的本人密钥不能使用来源工具。`answer.choice` 从 0 开始。安装、文件编辑和修改规则不属于 MCP 工具。
 
-HTTP 按 [Streamable HTTP 规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http) 接受单条 JSON-RPC 消息：POST 的 `Content-Type` 为 `application/json`，`Accept` 同时包含 `application/json`、`text/event-stream`。先发 `initialize`，后续请求带 `MCP-Protocol-Version: 2025-11-25`；不支持的版本返回 400。成功请求返回单个 JSON 对象；通知和客户端响应返回空的 202。请求体最多 1 MiB，超过返回 413；批量请求不接受。该入口无会话状态，不发 `Mcp-Session-Id`，不提供独立 SSE 流，GET、DELETE 返回 405；不实现旧 HTTP+SSE。HTTP 断开不等于取消业务，用取消工具显式请求停止。
+HTTP 按 [Streamable HTTP 规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http) 接受单条 JSON-RPC 消息：POST 的 `Content-Type` 为 `application/json`，`Accept` 同时包含 `application/json`、`text/event-stream`。先发 `initialize`，后续请求带 `MCP-Protocol-Version: 2025-11-25`；不支持的版本返回 400。普通工具请求返回单个 JSON 对象；通知和接受的客户端响应返回空的 202。请求体最多 1 MiB，超过返回 413；批量请求不接受。没有 form Elicitation 能力的客户端、来源客户端仍不分配会话编号，没有会话的 GET、DELETE 返回 405。不实现旧 HTTP+SSE；stdio 不增加主动卡片。
+
+本人 HTTP 客户端在初始化声明 `capabilities.elicitation.form = {}`，或等价的 `capabilities.elicitation = {}` 时自动注册主动卡片。响应返回 `Mcp-Session-Id`，会话绑定初始化时的 Bearer 密钥。客户端发送 `notifications/initialized` 后，以相同密钥、会话编号和版本头建立 GET SSE，`Accept` 包含 `text/event-stream`。服务器可以直接在流上发送 `elicitation/create`，不要求客户端先调用某个工具；客户端用带相同会话的 POST 提交响应。错误密钥或未知会话不能接管连接。
+
+主动卡片属于本人入口，范围与 `status` 相同，不按规则的 `channels` 过滤，也不另建业务队列。开放的 ask 映射为 form：`choice` 是选项字符串下标，或 `free` 加非空 `text`；普通 notice 用 `ack: true` 确认已处理，可附 `text`。FYI 和已回答、结案的状态通过 `notifications/message` 更新，不重新提问。`accept` 校验后走原回答接口；`decline`、`cancel` 不改变卡片，本次连接不重复问。
+
+回答只接受该会话发出的原请求编号，同一张卡片仍只有第一次回答生效。重复相同响应不重复记事实；其他客户端或 CLI 已回答时，尚未结束的对话框收到 `notifications/cancelled`。会话只保存传输关联，卡片和已接受的回答由事实日志保存。断线后会话保留 30 分钟，重连从本人当前开放卡片恢复；到期或中台重启后重新初始化。带有效会话的 DELETE 注销并关闭 SSE，不取消业务任务；关闭服务器也会释放连接。HTTP 断开或关闭对话框不等于取消业务，用取消工具显式请求停止。
 
 携带 `Origin` 时，只接受 `hub.publicUrl` 的 origin，没配时使用监听地址；不依据请求的 Host 放行其他 origin，也不开放跨域浏览器访问。无 Origin 的客户端可用 Bearer 密钥连接。客户端应支持预配置认证请求头，当前没有 OAuth 登录；跨不可信网络使用 HTTPS 或加密隧道。完整客户端配置见 [MCP 操作手册](../skills/agent-autoloop/references/mcp.md)。
 
-本人回答仍记为本人，来源事件不带 worker 的层数。不要把本人管理 MCP 配进接单程序启动的 Agent，否则一轮能自己回答自己的卡片。新增 HTTP 传输是兼容扩展；现有 stdio、规则、`/v1` 和插件入口不变。
+本人回答仍记为本人，来源事件不带 worker 的层数。不要把本人管理 MCP 配进接单程序启动的 Agent，否则一轮能自己回答自己的卡片。HTTP 传输和按能力启用的 Elicitation 都是兼容扩展；现有 stdio、无 Elicitation 能力的 HTTP 客户端、规则、`/v1` 和插件入口不变。
 
 ### 通道模板与命令行示例
 

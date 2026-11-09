@@ -149,7 +149,7 @@ text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK S
 <path class="both" d="M388 498H328"/>
 <rect class="you" x="172" y="454" width="152" height="88" rx="26"/>
 <text x="248" y="493" class="you-t" text-anchor="middle">你</text>
-<text x="248" y="517" class="you-s" text-anchor="middle">通道 · CLI · MCP</text>
+<text x="248" y="517" class="you-s" text-anchor="middle">CLI · MCP 收卡片</text>
 
 <!-- 5: 你的回答 -> 回到内核接着干 -->
 <path class="conn" d="M248 452V410H400V386"/>

@@ -73,7 +73,7 @@ Windows 直接运行原生 CLI，不通过 WSL。普通命令在独立 Job Objec
 
 完整步骤见随 Skill 分发的 [程序包安装手册](skills/agent-autoloop/references/install.md)。目标机器解压已准备好的程序包后直接运行，不需要拉源码或编译；中台与 worker 可以通过局域网 IP 连接。安装 Skill 的操作机不需要源码，也不需要安装中台程序，可通过授权的远程入口执行。
 
-中台启动后自动在同端口 `/mcp` 提供 Streamable HTTP MCP。日常管理可让客户端直接连接中台 URL，并配置本人或来源的 Bearer 密钥，不需要 SSH；见 [MCP 连接说明](skills/agent-autoloop/references/mcp.md)。
+中台启动后自动在同端口 `/mcp` 提供 Streamable HTTP MCP。日常管理可让客户端直接连接中台 URL，并配置本人或来源的 Bearer 密钥，不需要 SSH。声明 form Elicitation 的本人客户端可自动注册并接收卡片、提交回答；Codex 使用项目 `.codex/config.toml` 和项目外的凭据 helper，按需允许 Elicitation 提示，其余审批保持原设置。见 [MCP 连接说明](skills/agent-autoloop/references/mcp.md)。
 
 ## 临时 HOME、CI 或没有服务管理器
 

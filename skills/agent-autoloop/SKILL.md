@@ -236,7 +236,9 @@ Claude 主任务要委托 Codex 操作网页时，从 `examples/recipes/browser-
 
 中台启动后在同一地址的 `/mcp` 提供 Streamable HTTP MCP，支持 2025-11-25 版。客户端用 URL 和 Bearer 密钥直接连接，不需要 SSH、本机程序或源码。配置示例、工具范围与请求头见随 Skill 分发的 [MCP 直连](references/mcp.md)。已有 MCP 工具时直接调用；下文 CLI 示例对应同一组业务操作。
 
-现有 `agent-autoloop mcp` 继续提供 stdio：客户端启动 `node`，参数为该机器程序的 `bin/agent-autoloop.ts` 完整路径和 `mcp`，环境里传 `AGENT_AUTOLOOP_HOME`，使用该机器 `config.json` 已有身份。HTTP 入口只用请求携带的身份，不借用服务器自己的管理密钥。
+支持 form Elicitation 的本人 HTTP 客户端初始化时自动注册，会通过 SSE 收到本人可见卡片，不需要模型调用等待工具。用户在表单实际提交后才走原回答接口；拒绝或关闭表单仍保留卡片。多个对话只接受第一次回答，其余旧对话框取消。范围与 `status` 相同，不受规则的 `channels` 通知范围限制。项目级 Codex 配置使用 `.codex/config.toml`；凭据留在项目外，允许 `mcp_elicitations` 提示，不为此改变其他审批类别。完整例子见同一份 MCP 手册。
+
+现有 `agent-autoloop mcp` 继续提供 stdio 工具，不增加主动卡片：客户端启动 `node`，参数为该机器程序的 `bin/agent-autoloop.ts` 完整路径和 `mcp`，环境里传 `AGENT_AUTOLOOP_HOME`，使用该机器 `config.json` 已有身份。HTTP 入口只用请求携带的身份，不借用服务器自己的管理密钥。
 
 不要把本人管理 MCP 配进接单程序启动的 CLI，否则一轮能自己回答自己的卡片。本人回答仍记为本人；来源只能以自己的名义发事件和通知。
 

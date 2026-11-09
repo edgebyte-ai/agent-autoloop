@@ -204,7 +204,7 @@ agent-autoloop workflow cancel <工作项编号>
 
 **写自己的插件。** 从 [Agent](examples/plugins/hello-agent/agent.ts)、[通道](examples/plugins/hello-channel/channel.ts)、[事件](examples/plugins/hello-source/source.ts) 三个可运行的最小模板开始，见[插件开发说明](docs/plugins.md)。要让 Agent 操作网页，先看[浏览器接入](docs/plugins.md#浏览器接入)。命令行和 [MCP](skills/agent-autoloop/SKILL.md#mcp-与密钥撤销) 也能查看和回答卡片。
 
-**MCP 直接连中台。** 启动后，同端口的 `/mcp` 提供 Streamable HTTP，客户端填写中台 URL 和本人或来源的 Bearer 密钥即可连接，不需要 SSH 或本机源码。可查询、回答、启动和控制已有工作流；安装、改规则和创建项目文件仍用命令。现有 stdio 入口保留，见 [MCP 配置示例](skills/agent-autoloop/references/mcp.md)。
+**MCP 直接连中台。** 启动后，同端口的 `/mcp` 提供 Streamable HTTP，客户端填写中台 URL 和本人或来源的 Bearer 密钥即可连接，不需要 SSH 或本机源码。可查询、回答、启动和控制已有工作流。支持 form Elicitation 的本人客户端还会自动注册，通过 SSE 接收本人可见卡片，在客户端表单里回答；不需要模型调用等待工具，也不按规则的通道范围过滤。安装、改规则和创建项目文件仍用命令。现有 stdio 工具保留，主动卡片只用于 HTTP，见 [MCP 与 Codex 项目级配置示例](skills/agent-autoloop/references/mcp.md)。
 
 ## 内核的四个机制
 

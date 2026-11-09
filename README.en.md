@@ -206,7 +206,7 @@ Agents that speak ACP connect with `use: "acp"` and can go on in the same sessio
 
 **Write your own.** Start from the runnable [agent](examples/plugins/hello-agent/agent.ts), [channel](examples/plugins/hello-channel/channel.ts), and [event](examples/plugins/hello-source/source.ts) templates and the [plugin guide](docs/plugins.md). For web tasks, read [browser access](docs/plugins.md#浏览器接入) first. The CLI and [MCP](skills/agent-autoloop/SKILL.md#mcp-与密钥撤销) can also inspect and answer cards.
 
-**Connect MCP directly to the hub.** The running hub serves Streamable HTTP at `/mcp` on its existing port. Configure the hub URL and an owner or source Bearer key in the client; SSH and local source code are not required. Tools inspect, answer, start, and control existing workflows. Installation, rule changes, and project files still use commands. The stdio entry point remains available. See the [MCP configuration example](skills/agent-autoloop/references/mcp.md).
+**Connect MCP directly to the hub.** The running hub serves Streamable HTTP at `/mcp` on its existing port. Configure the hub URL and an owner or source Bearer key in the client; SSH and local source code are not required. Tools inspect, answer, start, and control existing workflows. Owner clients that declare form elicitation also register for cards over SSE and submit answers in client forms. No waiting tool call is required; these clients see the owner's cards rather than a rule's selected channels. Installation, rule changes, and project files still use commands. The stdio tools remain available, while proactive cards use HTTP only. See the [MCP and Codex project configuration example](skills/agent-autoloop/references/mcp.md).
 
 ## Four kernel mechanisms
 

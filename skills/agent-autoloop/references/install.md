@@ -73,7 +73,7 @@ tar -czf /tmp/agent-autoloop-app.tar.gz -C "$HOME/.agent-autoloop" app
 
 Linux 内置服务使用 `systemctl --user`。需要退出登录后继续运行时，在中台和 Linux worker 各执行 `sudo loginctl enable-linger "$USER"`。没有 systemd 的机器运行 `agent-autoloop up`，交给已有进程管理器托管。
 
-中台启动后，Streamable HTTP MCP 与业务接口共用端口，地址为 `http://192.168.1.10:3350/mcp`。客户端提供本人或来源的 Bearer 密钥即可连接，无须另起 MCP 进程；配置见 [MCP 直连](mcp.md)。
+中台启动后，Streamable HTTP MCP 与业务接口共用端口，地址为 `http://192.168.1.10:3350/mcp`。客户端提供本人或来源的 Bearer 密钥即可连接，无须另起 MCP 进程。支持 form Elicitation 的本人客户端还会自动注册收卡片，保持 GET SSE 后可在客户端表单里回答；来源客户端不注册。Codex 项目级连接、外置凭据 helper 和 Elicitation 审批设置见 [MCP 直连](mcp.md)。
 
 局域网 HTTP 可以连接，密钥和任务资料会明文传输，只用于用户信任的网络。跨不可信网络用 HTTPS 或加密隧道。公网入口才需要另配反向代理；没有公网地址不阻止中台和 worker 在局域网工作。
 
