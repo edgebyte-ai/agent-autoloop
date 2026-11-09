@@ -88,8 +88,8 @@ test("what decides what's stored brings a rebuild", () => {
     ],
     [
       "kernel/evolve.ts",
-      '["events", "runs", "cards", "timers"]',
-      '["events", "runs", "cards", "timers", "deliveries"]',
+      '["events", "runs", "cards", "timers", "workflows", "workflow_steps"]',
+      '["events", "runs", "cards", "timers", "workflows", "workflow_steps", "deliveries"]',
     ],
     [
       "kernel/credentials.ts",

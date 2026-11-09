@@ -3,6 +3,7 @@ export type Job = {
   run: number;
   token: string;
   attempt: number;
+  workflow?: { item: number; root: number };
   rule: Pick<Rule, "name" | "cwd" | "skill" | "prompt" | "emits">;
   agent: {
     id: string;
@@ -14,6 +15,7 @@ export type Job = {
     command?: string[];
     program?: string;
     timeout?: number;
+    threadIdleMinutes?: number;
   };
   session: string | null;
   askFirst: string[];

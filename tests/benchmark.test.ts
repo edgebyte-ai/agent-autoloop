@@ -2,6 +2,7 @@
 // cron work is claimed before the measured event, leaving the readiness wait stuck and invalidating dispatch timing;
 // a percentile off by one, so a slow outlier is hidden or a p99 from a few samples reads low; a slow case left with no
 // samples, or one that runs on past its budget and lets the polls it depends on lapse.
+// Requests still connecting must not be sampled as full load; a past peak or an expired wait must not count as ready.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -10,7 +11,47 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { checkPolls, observe, dispatchLatency, percentile, timed } from "../scripts/metrics.ts";
+import { checkPolls, observe, dispatchLatency, percentile, timed, waitForPolls } from "../scripts/metrics.ts";
+
+test("load sampling returns the first fully waiting snapshot after requests arrive", async () => {
+  const samples = [
+    { active: 912, peak: 1000, rssMB: 190 },
+    { active: 998, peak: 1000, rssMB: 205 },
+    { active: 1000, peak: 1000, rssMB: 213 },
+    { active: 1000, peak: 1000, rssMB: 180 },
+  ];
+  const loaded = await waitForPolls(async () => samples.shift()!, 1000, 1000.5);
+  assert.deepEqual(loaded, { active: 1000, peak: 1000, rssMB: 213 });
+  assert.equal(samples.length, 1, "no later, lower-memory snapshot is substituted");
+});
+
+test("load sampling times out when the full concurrent load never arrives", async () => {
+  await assert.rejects(
+    waitForPolls(
+      async () => {
+        assert.fail("an exhausted deadline must not request another sample");
+      },
+      1000,
+      0,
+    ),
+    { name: "TimeoutError" },
+  );
+  await assert.rejects(
+    waitForPolls(async () => ({ active: 999, peak: 1000 }), 1000, 30),
+    { name: "TimeoutError" },
+  );
+  await assert.rejects(
+    waitForPolls(
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        return { active: 1000, peak: 1000 };
+      },
+      1000,
+      30,
+    ),
+    { name: "TimeoutError" },
+  );
+});
 
 test("a thousand completed requests cannot stand in for a thousand waiting ones", () => {
   assert.throws(() => checkPolls({ active: 0, peak: 1 }, 1000), /1000/);

@@ -23,6 +23,9 @@ const VIEWS = {
   seen: "kind name seen_at",
   keys: "kind name hash created_at",
   pauses: "name by reason since until",
+  workflows:
+    "id root parent run definition worker cwd depth state pending outputs sessions paused cancel reason progress_at created_at usage budget",
+  workflow_steps: "id root item step kind role attempt state session turn started_at finished_at progress_at result",
 };
 
 /** Made anew at every start, so changing them takes no rebuild and no migration. */
@@ -187,5 +190,13 @@ export function stateOf(now: number, before: number | undefined, rules: Rules, {
     hasMore,
     nextBefore: hasMore ? page[PAGE - 1].id : null,
     unrouted: unrouted(),
+    workflows: all<Row>("SELECT * FROM workflows ORDER BY id DESC LIMIT 60").map((item) => ({
+      ...item,
+      pending: JSON.parse(item.pending),
+      outputs: JSON.parse(item.outputs),
+      sessions: JSON.parse(item.sessions),
+      usage: item.usage ? JSON.parse(item.usage) : null,
+      budget: item.budget ? JSON.parse(item.budget) : null,
+    })),
   };
 }

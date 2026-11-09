@@ -33,11 +33,11 @@ node --disable-warning=ExperimentalWarning --test --test-name-pattern='agent-aut
 | `link(session)`              | 可选，打开这个会话的链接。回执写错时，`read` 返回了 `session` 的插件都只重写回执，和有没有链接无关                            |
 | `check(program)`             | 可选，`doctor` 问它这个 Agent 现在能不能用：能用返回 `null`，否则返回下一步怎么做。参数是规则里给它写的 `program`，没写就不传 |
 
-`turn` 一定有的是 `prompt`、`session`、`resume`、`cwd`、`access`、`contextFile`、`folder`，另外四个只有规则里给这个 Agent 写了才有：`model`、`effort`、`command`、`program`。`resume` 是这一轮要接回的原会话，新开一轮时是 `null`。`contextFile` 是资料文件，受限 CLI 需要允许读取 `folder`。`program` 是内置插件换成的启动程序，第三方插件用不上，收下也可以不理。那四个都按「可能没有」来读，内置插件就是这么写的：`...(turn.model ? ["--model", turn.model] : [])`、`turn.command ?? []`。`read` 要能处理未写完的输出；CLI 真正完成后才返回 `text`。`read` 抛错或什么也不返回时，还在跑的接着跑，结束后这一轮算没跑成，留在原会话重派。
+`turn` 一定有的是 `prompt`、`session`、`resume`、`cwd`、`access`、`contextFile`、`folder`。`model`、`effort`、`command`、`program`、`threadIdleMinutes` 只有可信配置写了才有。`resume` 是这一轮要接回的原会话，新开一轮时是 `null`。`contextFile` 是资料文件，受限 CLI 需要允许读取 `folder`。`program` 是内置插件换成的启动程序，第三方插件可以不使用。可选字段按「可能没有」来读：`...(turn.model ? ["--model", turn.model] : [])`、`turn.command ?? []`。`read` 要能处理未写完的输出；CLI 真正完成后才返回 `text`。`read` 抛错或什么也不返回时，还在跑的接着跑，结束后这一轮算没跑成，留在原会话重派。
 
 支持 `resume` 的插件，从 Agent 收下提示词起都要返回 `started: true`，包括运行中和出错之后。否则干到一半断了，也会被当成会话接不上，开新会话把业务重做一遍。返回了 `session` 就要按 `turn.resume` 接回原会话：没跑成的重派和写错回执的重写都靠它；接不回去的 CLI 不要返回 `session`。
 
-`usage` 是这次启动用掉的量。有的 CLI 只给整个会话累计到现在的数（Codex 的 Token、Claude Code 的费用），这几项放进 `sessionUsage`，同时要返回 `session`。接单程序启动前记下这个会话上次的累计值，结束后相减，和 `usage` 合起来上报；这些记录放在 `~/.agent-autoloop/worker/usage/`，接单程序中途重启也不会多算。
+`usage` 是这一轮用掉的量。有的 CLI 只给整个会话累计到现在的数（Codex 的 Token、Claude Code 的费用），这几项放进 `sessionUsage`，同时要返回 `session`。接单程序启动前记下这个会话上次的累计值，结束后相减，和 `usage` 合起来上报；这些记录放在 `~/.agent-autoloop/worker/usage/`，接单程序中途重启也不会多算。Codex app-server 使用 `tokenUsage.total`；`tokenUsage.last` 只代表最近一次模型请求，不能当作整个 Turn 的用量。未知的 Token 或费用不填写，不能补成零。
 
 没有记录的续接（换了电脑、升级前就有的会话）或累计值变小时，这几项这次不报，不猜；下一次续接恢复正常。其他程序在同一个会话里用掉的量分不出来，比如本人打开链接接着聊，会算进下一次续接。CLI 改成只报单次时，插件要把这几项改回 `usage`，不要靠数字大小去猜。
 
@@ -51,13 +51,37 @@ Codex 的 Windows elevated 沙箱使用专用账号；插件给该账号组增�
 
 Windows 原生运行支持 `.exe`/`.com`、PowerShell `.ps1` 和 npm 生成的 `.cmd` 包装（直接执行其 JS 入口或 `.exe`，保留中文、多行及引号）。其他 `.bat`/`.cmd` 不作为 shell 源码启动，请用可执行程序或 `node script.js`。Unix 沿用登录 shell 查找命令，Windows 按 PATH 和 PATHEXT 找；Agent 自己也必须支持当前系统。文中的 shell、curl/jq 教程在 Unix 或 WSL 运行。
 
-只需要打印最后一条消息时，用内置 `command` 加参数数组即可，不必写插件。参数里可以用 `{prompt}`、`{model}`、`{effort}`、`{cwd}`、`{context}`，每个参数只替换一轮，替换进去的提示词原样传给程序：提示词里写着 `{cwd}` 或 `$&`，到程序那边也还是这几个字，不会被再替换一次。每个 Agent 进程（包括内置插件配的 `program` 脚本）都能读到环境变量 `AGENT_AUTOLOOP_CONTEXT`（资料文件）和 `AGENT_AUTOLOOP_RUN`（第几轮）。同一轮重试、重写回执时编号不变；回答和到期的复查是新的一轮，编号不同。
+只需要打印最后一条消息时，用内置 `command` 加参数数组即可，不必写插件。参数里可以用 `{prompt}`、`{model}`、`{effort}`、`{cwd}`、`{context}`，每个参数只替换一轮，替换进去的提示词原样传给程序：提示词里写着 `{cwd}` 或 `$&`，到程序那边也还是这几个字，不会被再替换一次。一次性 Agent 进程及其 `program` 脚本能读到环境变量 `AGENT_AUTOLOOP_CONTEXT`（资料文件）和 `AGENT_AUTOLOOP_RUN`（第几轮）。同一轮重试、重写回执时编号不变；回答和到期的复查是新的一轮，编号不同。常驻进程服务多个任务，不能用进程环境保存某一轮的目录或资料路径；插件应读取本次 `turn`。
+
+### 常驻 Agent
+
+一次性插件继续使用 `command` 和 `read`。需要共享连接的插件提供 `open({ log, environment, folder })`，返回以下方法：
+
+| 方法 | 作用 |
+|---|---|
+| `start(turn, checkpoint, persist)` | 开始或恢复本轮，返回 `Promise<Reading>`；`checkpoint` 是这次执行上次保存的恢复记录 |
+| `interrupt(checkpoint)` | 中断该执行，不能停止其他任务或整个共享进程 |
+| `close()` | 关闭 worker 持有的连接，并确认相关进程结束 |
+
+`persist(checkpoint)` 是同步保存回调。插件先记录外部请求意图，再发送请求；收到 thread、turn 和结果时立即保存。重启后先核对外部状态，已经完成的只重新交结果。结果不明时返回阻塞原因，不能直接新建会话或重做有副作用的动作。`Reading.progress` 表示实际进展，心跳不能填成进展。
+
+内置 `use: "codex"` 使用这套接口。worker 按需启动一份 `codex app-server`，普通任务、工作流角色和回执修复共用进程，各自使用独立 thread。同一 thread 的 Turn 串行；已加载的 thread 直接开始下一 Turn，不重复 resume。取消仅调用该 thread、turn 的中断。
+
+```json
+{ "name": "Codex", "worker": "my-computer", "use": "codex", "access": "edit", "threadIdleMinutes": 120 }
+```
+
+`threadIdleMinutes` 单位是分钟，默认 120。空闲到期后卸载 thread，后续需要时恢复；这不会删除 thread 历史。等待人工回答时当前 Turn 已结束，不发新模型请求，但共享 app-server 仍可驻留。进程和 thread 复用减少重复启动与加载，不保证模型缓存命中。
+
+Codex 沿用本机 CLI 的 provider 与登录配置，插件不修改用户配置。`model`、`effort`、`access` 和工作目录从可信配置逐轮传入。`program` 仍可指定包装程序，但同一 worker 的 Codex 配置必须使用同一个程序；不能靠同一常驻进程同时承载不同包装程序的环境。
+
+恢复记录会区分“请求准备发送”“已知 thread”“已知 turn”和“已有结果”。新 thread 或 Turn 的响应丢失后，插件先查询已存在的记录；无法确认对应关系时保留阻塞，不静默重开。会话不能恢复时会记录原因，不把重建上下文称为续接原 thread。
 
 DeepSeek Harness 有内置 `dsh` 插件，规则里写 `use: "dsh"`，要 0.2.2 或更新，`agent-autoloop doctor` 会查。现在 npm 的 `latest` 还是旧版，要这样装：`npm install -g @deepseek-ai/dsh@next --allow-scripts=koffi,node-pty,@deepseek-ai/dsh-subprocess-local`。新版 npm 默认不跑依赖的安装脚本，不放行这三个包，装完看着正常，一跑才出错。从旧版升上来的，0.2.2 可能读不到 `~/.dsh/.credentials.yaml` 里的 `refs`，报 `MISSING_CREDENTIAL`：把密钥放进环境变量，Linux 的系统服务放 `~/.config/environment.d/*.conf`。只上报 Token，不上报费用。有用户在 WSL2 上用 0.2.2-rc.1 和第三方 OpenAI 兼容服务实测跑通了问答、用量和 `resume`。它以 `dsh headless --json` 跑一轮，从 `session` 事件拿会话编号，用 `--session-id` 续接，把 `step_end` 的用量汇总为 Token，`final` 事件才算跑完；`access` 每次都映射成 `--permission-mode`，要人批准的调用用 `--approval-policy never` 直接拒绝。规则里的 `model`、`effort` 不起作用，用 DSH 自己的配置。没有可打开的桌面会话链接。DSH 默认把会话日志上传给 DeepSeek，见[它的说明](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/reference/README.md)。
 
 ### 浏览器接入
 
-浏览器工具装在运行 Agent 的电脑上，由该 CLI 的工具配置或项目 Skill 提供。Codex 插件启动的是后台 [`codex exec`](https://developers.openai.com/codex/noninteractive/)；可以使用它已配置的 [MCP 工具](https://developers.openai.com/codex/mcp/)，不能只凭桌面应用能打开网页就认定后台也能访问同一浏览器。
+浏览器工具装在运行 Agent 的电脑上，由该 CLI 的工具配置或项目 Skill 提供。Codex 插件启动的是后台 [`codex app-server`](https://developers.openai.com/codex/app-server)；可以使用它已配置的 [MCP 工具](https://developers.openai.com/codex/mcp/)，不能只凭桌面应用能打开网页就认定后台也能访问同一浏览器。
 
 Claude 委托 Codex 的完整规则、Skill 和参数调用脚本见[浏览器交接模板](../examples/recipes/browser-handoff/README.md)。入口命令、目标与允许操作由本人配置；网页助手返回证据和会话编号，主任务负责业务与回执。
 
@@ -117,7 +141,7 @@ Claude 委托 Codex 的完整规则、Skill 和参数调用脚本见[浏览器�
 | DeepSeek Harness | `read-only`：不能写文件，读文件和联网不受限                      | `workspace-write`：命令和文件改动限于工作目录和临时目录，读文件和联网不受限  | `danger-full-access`：不受限制                         |
 | ACP              | Agent 来问时，同意读和搜索                                       | 再同意工作目录内的编辑                                                       | 同意它来问的所有操作                                   |
 
-Codex 的三个档位已用插件命令实跑；DeepSeek Harness 和 Claude Code 分别依据 [DSH 文档](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/reference/README.md)和[官方权限说明](https://code.claude.com/docs/en/permission-modes)整理，没有调用模型实跑。Codex 的命令网络限制与托管搜索、MCP 不是同一个边界，详见[官方沙箱说明](https://learn.chatgpt.com/docs/agent-approvals-security)。用户的 CLI 配置可能改变上述能力；`read` 也不代表读不到本机密钥。
+Codex 的档位由 app-server 的 sandbox 策略执行；DeepSeek Harness 和 Claude Code 分别依据 [DSH 文档](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/reference/README.md)和[官方权限说明](https://code.claude.com/docs/en/permission-modes)整理。Codex 的命令网络限制与托管搜索、MCP 不是同一个边界，详见[官方沙箱说明](https://learn.chatgpt.com/docs/agent-approvals-security)。用户的 CLI 配置可能改变上述能力；`read` 也不代表读不到本机密钥。旧 `exec` 后端的实测不能替代当前 app-server 的验收。
 
 ACP 的 `access` 只管 Agent 主动来问的操作。规范允许 Agent 不询问就执行，这种操作 `access` 拦不住，要用 Agent 自己的模式限制，比如 `command` 里写 `env INITIAL_AGENT_MODE=read-only …`。ACP 的 `model`、`effort` 不生效，也要在 Agent 自己那边设置。
 

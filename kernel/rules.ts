@@ -1,15 +1,23 @@
 // What the kernel reads in rules: their shape and which events a rule takes. The rules file is checked before it gets
 // here, in protocol/rules.ts.
+import type { WorkflowDefinition } from "../protocol/workflow.ts";
 export type Access = "read" | "edit" | "full";
 export type Source = { name: string; adapter?: string };
-type AgentOptions = { model?: string; effort?: string; command?: string[]; program?: string; timeout?: number };
+type AgentOptions = {
+  model?: string;
+  effort?: string;
+  command?: string[];
+  program?: string;
+  timeout?: number;
+  threadIdleMinutes?: number;
+};
 export type Agent = AgentOptions & { name: string; worker: string; use: string; access: Access };
 export type Channel = { name: string; answerers?: string[]; links?: boolean };
 export type Tell = "always" | "needed" | "never";
 type EventFilter = { source: string; types: string[] };
 type When = EventFilter | { cron: string };
 type RuleWords = { skill?: string; prompt?: string };
-type RuleOptions = RuleWords & { parallel?: number; resume?: boolean; emits?: EventFilter };
+type RuleOptions = RuleWords & { parallel?: number; resume?: boolean; emits?: EventFilter; workflow?: string };
 /** Without channels a rule's cards reach every channel; with them, only those. */
 type Reach = { channels?: string[] };
 /** Without parallel a rule's group runs one at a time; with it, each subject is its own thread, that many at once. */
@@ -26,7 +34,13 @@ export type Elsewhere = RuleWords & {
   cwd?: string;
 };
 type Registered = { sources: Record<string, Source>; agents: Record<string, Agent>; channels: Record<string, Channel> };
-export type Rules = Registered & { timezone: string; askFirst: string[]; rules: Rule[]; elsewhere: Elsewhere[] };
+export type Rules = Registered & {
+  timezone: string;
+  askFirst: string[];
+  rules: Rule[];
+  elsewhere: Elsewhere[];
+  workflows?: Record<string, WorkflowDefinition>;
+};
 
 /** The source of what the clock makes happen. */
 export const SCHEDULE = "schedule";

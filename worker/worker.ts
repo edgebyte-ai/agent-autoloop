@@ -3,7 +3,7 @@
 // find it still going, or finished. A job is saved before anything slow happens; a result is saved before it's handed
 // in and stays until the hub has taken it.
 import { execFileSync, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -22,12 +22,21 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { HubError, type Hub } from "../protocol/client.ts";
 import { HOME } from "../host/home.ts";
-import { commandLine, processCommand } from "../host/command.ts";
+import { commandLine, processCommand, windowsJobState } from "../host/command.ts";
 import type { Job } from "../protocol/job.ts";
 import { addUsage, type Notice, type Result } from "../protocol/validate.ts";
-import { adapterFor, type Adapter, type Reading, type Turn, type Usage } from "./agents.ts";
+import {
+  adapterFor,
+  type Adapter,
+  type Checkpoint,
+  type Reading,
+  type Resident,
+  type Turn,
+  type Usage,
+} from "./agents.ts";
 import { promptFor, readMessage, repairPrompt, resultFrom } from "./contract.ts";
 import { loadUsage, saveUsage, usageDelta } from "./usage.ts";
+import { createWorkflowDriver } from "./workflow.ts";
 
 const RUNS = path.join(HOME, "worker", "runs");
 const NOTHING: Usage = { input: 0, output: 0, cached: 0, cost: 0 };
@@ -64,13 +73,27 @@ type Entry = {
   usageBaseline?: Usage;
   pid?: number;
   launchedAt?: number;
+  createdAt?: number;
+  activeAt?: number;
+  wallStartedAt?: number;
+  elapsedMs?: number;
+  completedAt?: number;
+  timeLimitMs?: number;
   finishedAt?: number;
   told?: string;
   stopping?: number;
   why?: "cancel" | "timeout" | "finished";
   result?: Result;
+  local?: boolean;
+  resident?: boolean;
+  blocked?: string;
+  blockedFinished?: boolean;
 };
-export type WorkerHub = Pick<Hub, "work" | "started" | "result">;
+export type WorkerHub = Pick<Hub, "work" | "started" | "result"> & Partial<Pick<Hub, "workflowAdvance">>;
+export type ExecutionHandle = {
+  poll(): Promise<{ result?: Result; reading: Reading; activeMs: number }>;
+  cancel(): Promise<void>;
+};
 export type WorkerOptions = {
   hub: WorkerHub;
   name: string;
@@ -96,18 +119,20 @@ function sessionRise(entry: Entry, { session, sessionUsage }: Reading) {
 }
 
 /** What the agent's environment gets: never the hub's secrets, and nothing of a session the worker itself may be in. */
-function agentEnvironment(entry: Entry) {
+function agentEnvironment(entry?: Entry) {
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(process.env)) {
     if (/^(AGENT_AUTOLOOP_|CLAUDECODE$|CLAUDE_CODE_|CODEX_(?!HOME$))/.test(name)) continue;
     env[name] = value;
   }
-  return {
-    ...env,
-    AGENT_AUTOLOOP_HOME: HOME,
-    AGENT_AUTOLOOP_RUN: String(entry.run),
-    AGENT_AUTOLOOP_CONTEXT: path.join(entry.dir, "context.json"),
-  };
+  return entry
+    ? {
+        ...env,
+        AGENT_AUTOLOOP_HOME: HOME,
+        AGENT_AUTOLOOP_RUN: String(entry.run),
+        AGENT_AUTOLOOP_CONTEXT: path.join(entry.dir, "context.json"),
+      }
+    : env;
 }
 
 const files = (entry: Entry) => ({
@@ -115,9 +140,19 @@ const files = (entry: Entry) => ({
   err: path.join(entry.dir, `stderr-${entry.turn}.log`),
   exit: path.join(entry.dir, `exit-${entry.turn}`),
   command: path.join(entry.dir, `command-${entry.turn}.${process.platform === "win32" ? "json" : "sh"}`),
+  checkpoint: path.join(entry.dir, `checkpoint-${entry.turn}.json`),
+  reading: path.join(entry.dir, `reading-${entry.turn}.json`),
+  request: path.join(entry.dir, `request-${entry.turn}.json`),
 });
+const json = <T>(file: string): T | undefined =>
+  existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined;
+function saveJson(file: string, value: unknown) {
+  writeFileSync(`${file}.tmp`, JSON.stringify(value), { mode: 0o600 });
+  renameSync(`${file}.tmp`, file);
+}
 const quoted = (word: string) => `'${word.replaceAll("'", `'\\''`)}'`;
-const marker = (entry: Entry) => `agent-autoloop-run:${entry.run}:${entry.attempt}:${entry.turn}`;
+const marker = (entry: Entry) =>
+  `agent-autoloop-run:${entry.run}:${entry.attempt}:${entry.turn}${entry.local ? `:${createHash("sha256").update(entry.dir).digest("hex").slice(0, 12)}` : ""}`;
 
 /** Whether the run's process is still going: false when it is gone, null when we could not look. */
 async function alive(entry: Entry): Promise<boolean | null> {
@@ -135,16 +170,24 @@ async function alive(entry: Entry): Promise<boolean | null> {
 }
 
 function signal(entry: Entry, name: NodeJS.Signals) {
+  if (process.platform === "win32") {
+    void windowsJobState(files(entry).command, true);
+    return;
+  }
   try {
-    if (entry.pid) process.kill(process.platform === "win32" ? entry.pid : -entry.pid, name);
+    if (entry.pid) process.kill(-entry.pid, name);
   } catch {}
 }
 
 /** Whether anything in the run's group is still going, null when we could not look. */
 async function groupAlive(entry: Entry): Promise<boolean | null> {
   // The wrapper can die before a child; zombies have already stopped and only their parent can reap them.
+  if (process.platform === "win32") {
+    const [wrapper, children] = await Promise.all([alive(entry), windowsJobState(files(entry).command)]);
+    if (wrapper === true || children === true) return true;
+    return wrapper === null || children === null ? null : false;
+  }
   if (!entry.pid) return false;
-  if (process.platform === "win32") return alive(entry);
   try {
     return execFileSync("ps", ["-ax", "-o", "pgid=", "-o", "stat="], { encoding: "utf8" })
       .trim()
@@ -197,6 +240,11 @@ export function createWorker({
   let blind = false;
   let tidied = -Infinity;
   const said = new Set<string>();
+  const residents = new Map<string, Promise<Resident>>();
+  const pending = new Map<string, Promise<void>>();
+  const interrupts = new Map<string, Promise<void>>();
+  const workflows = new Map<string, ReturnType<typeof createWorkflowDriver>>();
+  let closing: Promise<void> | undefined;
   /** Trouble that lasts comes round every second, and once in the log will do. */
   const sayOnce = (line: string) => {
     if (!said.has(line)) log(line);
@@ -213,11 +261,66 @@ export function createWorker({
       }
     });
 
+  const ordinaryActive = () => entries().filter((entry) => !entry.job.workflow && !entry.result).length;
+  const workflowActive = (except?: string) =>
+    [...workflows].reduce((count, [dir, driver]) => count + (dir === except ? 0 : driver.active()), 0);
+  function workflow(entry: Entry) {
+    let driver = workflows.get(entry.dir);
+    if (!driver) {
+      if (!hub.workflowAdvance) throw new Error("中台没有工作流执行接口");
+      driver = createWorkflowDriver({
+        job: entry.job,
+        dir: entry.dir,
+        hub: { workflowAdvance: hub.workflowAdvance },
+        execute,
+        capacity: () => Math.max(0, capacity - ordinaryActive() - workflowActive(entry.dir)),
+        log,
+        now,
+      });
+      workflows.set(entry.dir, driver);
+    }
+    return driver;
+  }
+
+  function resident(use: string, adapter: Adapter) {
+    let connection = residents.get(use);
+    if (!connection) {
+      closing = undefined;
+      const folder = path.join(HOME, "worker", "residents", use);
+      mkdirSync(folder, { recursive: true, mode: 0o700 });
+      connection = Promise.resolve(adapter.open!({ log, environment: agentEnvironment(), folder }));
+      residents.set(use, connection);
+    }
+    return connection;
+  }
+
+  function continueResident(entry: Entry, adapter: Adapter) {
+    const file = files(entry);
+    if (pending.has(file.request)) return;
+    const turn = json<Turn>(file.request);
+    if (!turn) throw new Error("这一轮的启动记录不存在，无法确认是否已经执行");
+    const task = (async () => {
+      try {
+        const connection = await resident(entry.job.agent.use, adapter);
+        const reading = await connection.start(turn, json<Checkpoint>(file.checkpoint), (checkpoint) => {
+          saveJson(file.checkpoint, checkpoint);
+        });
+        saveJson(file.reading, { ...reading, ...(!reading.blocked && { finished: true }) });
+      } catch (error) {
+        saveJson(file.reading, { blocked: true, started: true, error: String((error as Error).message ?? error) });
+      }
+    })();
+    pending.set(file.request, task);
+  }
+
   /** Starts a turn of the agent: a process that outlives this one, leaving its output and exit code in files. */
   function launch(entry: Entry, adapter: Adapter, prompt: string) {
     entry.turn += 1;
     entry.launchedAt = now();
+    entry.activeAt ??= entry.launchedAt;
+    entry.wallStartedAt ??= Date.now();
     entry.usageBaseline = entry.resume ? loadUsage(entry.job.agent.use, entry.resume) : undefined;
+    entry.resident = !!adapter.open;
     delete entry.finishedAt;
     delete entry.pid;
     delete entry.stopping;
@@ -226,19 +329,27 @@ export function createWorker({
     const { rule, agent } = entry.job;
     const cwd = rule.cwd.replace(/^~(?=[/\\])/, homedir());
     const turn: Turn = {
+      id: `${entry.run}:${entry.attempt}:${entry.turn}:${entry.dir}`,
       prompt,
       session: entry.session,
       resume: entry.resume,
       cwd,
       model: agent.model,
       effort: agent.effort,
+      threadIdleMinutes: agent.threadIdleMinutes,
       access: agent.access as Turn["access"],
       command: agent.command,
       program: agent.program,
       contextFile: path.join(entry.dir, "context.json"),
       folder: entry.dir,
+      environment: agentEnvironment(entry),
     };
     if (!existsSync(cwd)) throw new Error(`在 ${cwd} 启动不了：这个目录不存在`);
+    if (adapter.open) {
+      saveJson(files(entry).request, turn);
+      continueResident(entry, adapter);
+      return;
+    }
     const argv = adapter.command(turn);
     const { out, err, exit, command } = files(entry);
     if (process.platform === "win32") {
@@ -305,13 +416,37 @@ export function createWorker({
     log(`run ${entry.run} (${rule.name}) turn ${entry.turn} started, pid ${child.pid}`);
   }
 
+  function elapsed(entry: Entry, finished = false) {
+    if (entry.activeAt === undefined) return 0;
+    let ended = Date.now();
+    if (finished) {
+      const file = files(entry);
+      const checkpoint = json<Checkpoint>(file.checkpoint)?.reading;
+      const reading = json<Reading>(file.reading);
+      const final = checkpoint?.finished ? checkpoint : reading;
+      if (final?.activeMs !== undefined) return Math.ceil(final.activeMs);
+      const evidence = existsSync(file.exit)
+        ? file.exit
+        : checkpoint?.finished
+          ? file.checkpoint
+          : reading?.finished
+            ? file.reading
+            : undefined;
+      if (evidence) ended = statSync(evidence).mtimeMs;
+    }
+    return Math.max(0, Math.ceil(ended - (entry.wallStartedAt ?? entry.activeAt)));
+  }
+
   function endWith(entry: Entry, result: Result) {
     entry.result = result;
+    delete entry.blocked;
+    delete entry.blockedFinished;
+    entry.completedAt = now();
+    entry.elapsedMs ??= elapsed(entry, true);
     save(entry);
   }
 
-  async function start(job: Job) {
-    const dir = path.join(RUNS, `${job.run}-${job.attempt}`);
+  async function prepare(job: Job, dir: string, local = false, prompt?: string, timeLimitMs?: number) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const entry: Entry = {
       run: job.run,
@@ -325,22 +460,93 @@ export function createWorker({
       resume: job.session,
       repairs: 0,
       triedFresh: false,
+      createdAt: now(),
+      ...(timeLimitMs !== undefined && { timeLimitMs }),
+      ...(local && { local }),
     };
     // Kept before anything slow: a worker stopped from here on still has the job.
     save(entry);
+    if (job.workflow && !local) {
+      workflow(entry);
+      return;
+    }
     try {
       writeFileSync(path.join(dir, "context.json"), JSON.stringify(job.context, null, 2), { mode: 0o600 });
       const adapter = await adapterFor(job.agent.use);
-      entry.prompt = promptFor(job, path.join(dir, "context.json"));
+      entry.prompt = prompt ?? promptFor(job, path.join(dir, "context.json"));
       save(entry);
-      launch(entry, adapter, entry.prompt);
+      if (!local && !closing) launch(entry, adapter, entry.prompt);
     } catch (error) {
       endWith(entry, { outcome: "failed", error: String((error as Error).message ?? error).slice(0, 500) });
     }
   }
 
+  async function start(job: Job) {
+    await prepare(job, path.join(RUNS, `${job.run}-${job.attempt}`));
+  }
+
+  async function execute(
+    job: Job,
+    dir: string,
+    prompt?: string,
+    options?: { timeLimitMs?: number },
+  ): Promise<ExecutionHandle> {
+    const file = path.join(dir, "entry.json");
+    if (!existsSync(file)) await prepare(job, dir, true, prompt, options?.timeLimitMs);
+    return {
+      async poll() {
+        let entry = json<Entry>(file)!;
+        if (!entry.blockedFinished) await check(entry);
+        entry = json<Entry>(file)!;
+        const adapter = await adapterFor(entry.job.agent.use);
+        const exit = files(entry).exit;
+        const code = existsSync(exit) ? Number(readFileSync(exit, "utf8")) : null;
+        return {
+          result: entry.result,
+          reading: entry.blocked
+            ? {
+                ...read(entry, adapter, code),
+                ...(entry.blockedFinished && entry.usage && { usage: entry.usage }),
+                blocked: true,
+                finished: entry.blockedFinished ?? false,
+                error: entry.blocked,
+              }
+            : read(entry, adapter, code),
+          activeMs: entry.elapsedMs ?? elapsed(entry),
+        };
+      },
+      async cancel() {
+        const entry = json<Entry>(file)!;
+        if (entry.blockedFinished) {
+          return endWith(entry, {
+            outcome: "cancelled",
+            summary: "执行已经结束，后续步骤已取消；原结果保留供核对",
+            ...(entry.usage && { usage: entry.usage }),
+            ...(entry.session && { session: entry.session }),
+          });
+        }
+        delete entry.blocked;
+        delete entry.blockedFinished;
+        stop(entry, "cancel");
+        await check(entry);
+      },
+    };
+  }
+
   function read(entry: Entry, adapter: Adapter, code: number | null): Reading {
-    const { out, err } = files(entry);
+    const { out, err, checkpoint, reading } = files(entry);
+    if (adapter.open && (entry.resident || existsSync(files(entry).request))) {
+      const final = json<Reading>(reading);
+      const observed = json<Checkpoint>(checkpoint)?.reading;
+      return final?.blocked && observed?.finished ? observed : (final ?? observed ?? {});
+    }
+    if (entry.local && entry.job.agent.use === "command" && code !== null) {
+      return {
+        ...adapter.read(snapshot(out), code, snapshot(err)),
+        text: snapshot(out).trim() || (code === 0 ? "命令执行完成" : ""),
+        finished: true,
+      };
+    }
     try {
       const reading = adapter.read(snapshot(out), code, code === null ? "" : snapshot(err));
       if (!reading) throw new Error("它什么也没给");
@@ -371,6 +577,7 @@ export function createWorker({
   function conclude(entry: Entry, adapter: Adapter, code: number | null) {
     // One ended because its turn was over but it wouldn't exit said what it had to say first.
     const seen = read(entry, adapter, entry.finishedAt ? 0 : code);
+    if (seen.blocked) return;
     entry.usage = addUsage(addUsage(entry.usage, seen.usage), sessionRise(entry, seen));
     const session = seen.session ?? (entry.turn > 0 && adapter.link ? entry.session : undefined);
     if (seen.session) entry.session = seen.session;
@@ -378,8 +585,11 @@ export function createWorker({
     const known = session && { session };
     if (entry.why === "cancel") return endWith(entry, { outcome: "cancelled", summary: "已停止", ...known, ...usage });
     if (entry.why === "timeout") {
-      const minutes = entry.job.agent.timeout ?? TIMEOUT_MINUTES;
-      const error = `超过 ${minutes} 分钟还没结束，已停止`;
+      const limit =
+        entry.timeLimitMs === undefined
+          ? `${entry.job.agent.timeout ?? TIMEOUT_MINUTES} 分钟`
+          : `${entry.timeLimitMs / 1000} 秒的步骤额度`;
+      const error = `超过 ${limit}还没结束，已停止`;
       if (entry.repairs) return discardReceipt(entry, adapter, error);
       return endWith(entry, { outcome: "failed", error, ...known, ...usage });
     }
@@ -388,7 +598,7 @@ export function createWorker({
       if (entry.repairs) return discardReceipt(entry, adapter, error);
       // The conversation may not be there to go on in, or something else has it open: this go carries on in a new one.
       // Not once the turn has started: a new one would do its work again. The hub tries again later, in this one.
-      if (entry.resume && !entry.triedFresh && entry.repairs === 0 && !seen.started) {
+      if (!entry.local && entry.resume && !entry.triedFresh && entry.repairs === 0 && !seen.started) {
         log(`run ${entry.run}: couldn't go on in ${entry.resume} (${error}); starting a new session`);
         entry.triedFresh = true;
         entry.resume = null;
@@ -405,6 +615,14 @@ export function createWorker({
     const { result, problem } = resultFrom(readMessage(seen.text), { session, usage: entry.usage });
     if (entry.repairs && !problem && result.outcome === "failed") return discardReceipt(entry, adapter, result.error!);
     if (!problem) return endWith(entry, result);
+    if (entry.local) {
+      entry.blocked = `这一轮的业务已经执行，但回执读不懂：${problem}`;
+      entry.blockedFinished = true;
+      entry.completedAt = now();
+      entry.elapsedMs = elapsed(entry, true);
+      save(entry);
+      return;
+    }
     // Its work is done and only the receipt is wrong: it writes the receipt again, and does nothing again.
     if (entry.repairs < REPAIRS && seen.session) {
       log(`run ${entry.run}: receipt not readable (${problem}); asking again`);
@@ -423,6 +641,15 @@ export function createWorker({
   /** Looks at a run in hand: still going, to be stopped, or ended. */
   async function check(entry: Entry) {
     if (entry.result) return;
+    if (entry.job.workflow) {
+      const driver = workflow(entry);
+      if (entry.stopping !== undefined) await driver.cancel();
+      if ((await driver.tick()).release) {
+        unlinkSync(path.join(entry.dir, "entry.json"));
+        workflows.delete(entry.dir);
+      }
+      return;
+    }
     let adapter: Adapter;
     try {
       adapter = await adapterFor(entry.job.agent.use);
@@ -430,6 +657,7 @@ export function createWorker({
       return endWith(entry, { outcome: "failed", error: String((error as Error).message).slice(0, 500) });
     }
     if (entry.turn === 0) {
+      if (entry.stopping !== undefined) return endWith(entry, { outcome: "cancelled", summary: "启动前已停止" });
       // The worker stopped while starting it, before anything was launched.
       if (!entry.prompt) entry.prompt = promptFor(entry.job, path.join(entry.dir, "context.json"));
       try {
@@ -441,9 +669,42 @@ export function createWorker({
         return endWith(entry, { outcome: "failed", error: String((error as Error).message ?? error).slice(0, 500) });
       }
     }
+    if (adapter.open && (entry.resident || existsSync(files(entry).request))) {
+      if (!existsSync(files(entry).request)) {
+        if (entry.stopping !== undefined) return endWith(entry, { outcome: "cancelled", summary: "启动前已停止" });
+        // The request file is saved before the connection sees it, so nothing could have been submitted yet.
+        entry.turn -= 1;
+        return launch(entry, adapter, entry.prompt);
+      }
+      const before = read(entry, adapter, null);
+      if (!before.finished) continueResident(entry, adapter);
+      const seen = read(entry, adapter, null);
+      if (seen.blocked) sayOnce(`run ${entry.run}: ${seen.error ?? "执行结果待核对"}`);
+      await reportSession(entry, adapter, seen);
+      if (seen.finished) return conclude(entry, adapter, 0);
+      if (entry.stopping !== undefined) {
+        const file = files(entry);
+        const checkpoint = json<Checkpoint>(file.checkpoint);
+        if (checkpoint && !interrupts.has(file.request)) {
+          const interrupt = resident(entry.job.agent.use, adapter)
+            .then((connection) => connection.interrupt(checkpoint))
+            .catch((error) => {
+              interrupts.delete(file.request);
+              sayOnce(`run ${entry.run}: couldn't confirm interruption: ${error}`);
+            });
+          interrupts.set(file.request, interrupt);
+          await interrupt;
+        }
+        return;
+      }
+      const limit = entry.timeLimitMs ?? (entry.job.agent.timeout ?? TIMEOUT_MINUTES) * 60_000;
+      if (now() - (entry.launchedAt ?? now()) > limit) stop(entry, "timeout");
+      return;
+    }
     const { exit } = files(entry);
     const exitCode = () => (existsSync(exit) ? Number(readFileSync(exit, "utf8").trim()) : null);
     if (entry.stopping !== undefined) {
+      if (process.platform === "win32") await windowsJobState(files(entry).command, true);
       const going = await groupAlive(entry);
       const overdue = now() - entry.stopping > STOP_GRACE;
       if (going === true) {
@@ -454,6 +715,11 @@ export function createWorker({
         // The forced kill is the last thing that can be done to it, and whether it worked can't be seen.
         if (!overdue) return;
         signal(entry, "SIGKILL");
+        if (process.platform === "win32" || entry.local) {
+          entry.blocked = "停止信号已发出，但还不能确认相关进程全部退出";
+          save(entry);
+          return;
+        }
         // A turn that was over, or a timeout, ends on what it said: `failed` there is tried again, redoing work done.
         if (entry.why !== "cancel") return conclude(entry, adapter, exitCode());
         // Reporting `cancelled` would release the item while a process may still be in it, which the protocol forbids
@@ -465,34 +731,43 @@ export function createWorker({
       }
       return conclude(entry, adapter, exitCode());
     }
-    if (existsSync(exit)) return conclude(entry, adapter, exitCode());
+    if (existsSync(exit)) {
+      if (process.platform === "win32" && (await groupAlive(entry)) !== false) {
+        sayOnce(`run ${entry.run}: 已有退出记录，但还不能确认相关进程全部退出；保留执行记录等待核对`);
+        return;
+      }
+      return conclude(entry, adapter, exitCode());
+    }
     // The shell can publish its exit between the first file check and ps returning.
     const looking = await alive(entry);
-    if (looking === false) return conclude(entry, adapter, exitCode());
+    if (looking === false) {
+      if (process.platform === "win32" && (await groupAlive(entry)) !== false) {
+        sayOnce(`run ${entry.run}: 主进程已经离开，但相关进程的状态还不能确认；保留执行记录等待核对`);
+        return;
+      }
+      if (entry.local && !existsSync(exit)) {
+        const group = await groupAlive(entry);
+        if (group === true) return;
+        entry.blocked = "进程已经离开，但没有留下退出结果；需要核对实际结果";
+        entry.blockedFinished = group === false;
+        if (entry.blockedFinished) {
+          entry.completedAt = now();
+          entry.elapsedMs = elapsed(entry, true);
+        }
+        save(entry);
+        return;
+      }
+      return conclude(entry, adapter, exitCode());
+    }
     // Unable to look, the run counts as still going, so its timeout and its finished turn still end it.
     if (looking === null && !blind) log(`couldn't inspect processes; runs count as going until they end or time out`);
     blind = looking === null;
     const seen = read(entry, adapter, null);
-    // Kept as soon as it's read: if the end can't be read, the one made up at launch may be nothing its CLI knows of.
-    if (seen.session && seen.session !== entry.session) {
-      entry.session = seen.session;
-      save(entry);
-    }
-    const session = seen.session ?? (adapter.link ? entry.session : undefined);
-    if (session && session !== entry.told) {
-      try {
-        await hub.started(entry.run, entry.token, { session, ...(adapter.link && { link: adapter.link(session) }) });
-        entry.told = session;
-        save(entry);
-      } catch (error) {
-        log(`run ${entry.run}: couldn't say it started: ${error}`);
-      }
-    }
+    await reportSession(entry, adapter, seen);
     const moment = now();
-    const limit = (entry.job.agent.timeout ?? TIMEOUT_MINUTES) * 60_000;
+    const limit = entry.timeLimitMs ?? (entry.job.agent.timeout ?? TIMEOUT_MINUTES) * 60_000;
     if (moment - (entry.launchedAt ?? moment) > limit) return stop(entry, "timeout");
     if (seen.finished) {
-      // Its turn is over but it hasn't gone: whatever it's stuck on, the answer is already there.
       if (!entry.finishedAt) {
         entry.finishedAt = moment;
         save(entry);
@@ -502,12 +777,40 @@ export function createWorker({
     }
   }
 
+  async function reportSession(entry: Entry, adapter: Adapter, seen: Reading) {
+    // A recovered turn must keep the actual session even if the final output cannot be read.
+    if (seen.session && seen.session !== entry.session) {
+      entry.session = seen.session;
+      save(entry);
+    }
+    const session = seen.session ?? (adapter.link ? entry.session : undefined);
+    if (!entry.local && session && session !== entry.told) {
+      try {
+        await hub.started(entry.run, entry.token, { session, ...(adapter.link && { link: adapter.link(session) }) });
+        entry.told = session;
+        save(entry);
+      } catch (error) {
+        log(`run ${entry.run}: couldn't say it started: ${error}`);
+      }
+    }
+  }
+
   function stop(entry: Entry, why: NonNullable<Entry["why"]>) {
     if (entry.stopping !== undefined || entry.result) return;
+    if (entry.job.workflow) {
+      entry.stopping = now();
+      entry.why = why;
+      save(entry);
+      return;
+    }
+    if (entry.turn === 0) {
+      endWith(entry, { outcome: "cancelled", summary: "启动前已停止" });
+      return;
+    }
     entry.stopping = now();
     entry.why = why;
     save(entry);
-    signal(entry, "SIGTERM");
+    if (!existsSync(files(entry).request)) signal(entry, "SIGTERM");
     log(`run ${entry.run}: stopping (${why})`);
   }
 
@@ -525,6 +828,11 @@ export function createWorker({
       log(`run ${entry.run}: the hub refused its result (${error.status}: ${error.message}); dropped`);
     }
     unlinkSync(path.join(entry.dir, "entry.json"));
+    for (let turn = 1; turn <= entry.turn; turn++) {
+      const key = files({ ...entry, turn }).request;
+      pending.delete(key);
+      interrupts.delete(key);
+    }
   }
 
   /** Nothing else can tell the owner when the hub is what's gone. */
@@ -567,6 +875,7 @@ export function createWorker({
       tidied = now();
       tidy(tidied);
     }
+    for (const entry of entries()) if (entry.job.workflow) workflow(entry);
     await eachEntry(check);
     await eachEntry(settle);
     const held = entries();
@@ -576,7 +885,7 @@ export function createWorker({
         claim,
         wait: held.length ? 1 : wait,
         running: held.map((entry) => entry.run),
-        capacity: held.length < capacity,
+        capacity: held.length < capacity && ordinaryActive() + workflowActive() < capacity,
       });
       for (const id of answer?.cancel ?? []) {
         const entry = held.find((entry) => entry.run === id);
@@ -608,11 +917,27 @@ export function createWorker({
   }
 
   async function run(signalled: AbortSignal) {
+    closing = undefined;
     log(`worker ${name} started`);
-    while (!signalled.aborted) {
-      if (!(await tick())) await new Promise((resolve) => setTimeout(resolve, PAUSE));
+    try {
+      while (!signalled.aborted) {
+        if (!(await tick())) await new Promise((resolve) => setTimeout(resolve, PAUSE));
+      }
+    } finally {
+      await close();
     }
   }
 
-  return { tick, run, entries, tidy };
+  async function close() {
+    closing ??= (async () => {
+      await Promise.all([...residents.values()].map(async (connection) => (await connection).close()));
+      await Promise.all(pending.values());
+      residents.clear();
+      pending.clear();
+      interrupts.clear();
+    })();
+    return closing;
+  }
+
+  return { tick, run, entries, tidy, execute, close };
 }

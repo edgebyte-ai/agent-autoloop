@@ -158,6 +158,17 @@ export function stateOf(now = Date.now(), before?: number) {
   }
 }
 
+export function workflowsOf(id?: number) {
+  db.exec("BEGIN");
+  try {
+    const latest = getView();
+    const result = id === undefined ? { workflows: query.workflowList(latest) } : query.workflowTree(latest, id);
+    return { seq: latest.seq, ...result };
+  } finally {
+    db.exec("COMMIT");
+  }
+}
+
 export type KeyKind = "source" | "worker" | "channel" | "owner";
 export const keepKeyHash = (kind: KeyKind, name: string, hash: string, now = Date.now()) =>
   execute("key", [kind, name, hash], now);
@@ -180,7 +191,8 @@ export const logAfter = (after = 0, limit = -1) =>
 /** The part of the log that explains one run: its events, cards and receipts, and the rules it ran under. */
 export function why(id: number) {
   const latest = getView();
-  if (!latest.get("runs", id)) throw new NotFound("没有这一轮");
+  const run = latest.get("runs", id);
+  if (!run) throw new NotFound("没有这一轮");
   const events = query.eventsOf(latest, id).map((event) => event.id);
   const cards = [...rows(latest, "cards", { run_id: id }), ...rows(latest, "cards", { answer_event: events })];
   const sequences = new Set<number>();
@@ -192,6 +204,11 @@ export function why(id: number) {
       sequences.add(Number(row.seq));
   };
   include("runs", id);
+  if (run.workflow) {
+    include("workflows", run.workflow);
+    for (const execution of rows(latest, "workflow_steps", { item: run.workflow }))
+      include("workflow_steps", execution.id);
+  }
   const read = (seq: number): Fact =>
     JSON.parse(String(statement(db, "SELECT fact FROM facts WHERE seq=?").get(seq)!.fact));
   for (const seq of [...sequences])

@@ -22,6 +22,7 @@ import {
   startupInstead,
   systemUnit,
   untilAnswering,
+  windowsServiceStatus,
 } from "../host/service.ts";
 import { versionLine } from "../host/version.ts";
 import { colorFor, render } from "./status.ts";
@@ -52,6 +53,8 @@ const HELP = `Agent 自动化中台
                                     恢复；错过的时段不补跑
   agent-autoloop run <规则> [--subject 对象] [--reason 说明]
                                     立即运行一轮，照常排队派活
+  agent-autoloop workflow list|show|start|pause|resume|cancel
+                                    查看、启动和控制工作流；workflow --help 看参数
   agent-autoloop emit <类型> [--dry-run] [--subject x] [--summary x] [--detail x] [--link x] [--id x] [--key 来源密钥]
                                     发一条事件；--dry-run 只预演会派给谁，不连接中台
   agent-autoloop tell <编号> [--task 定时任务名]
@@ -87,7 +90,7 @@ const INIT_USAGE = `用法：agent-autoloop init [--agent claude|codex] [--comma
 
 const TRY_USAGE = `用法：agent-autoloop try
 
-用本机接好的 Agent 跑一遍完整流程：提问，进程退出等你回复，你拍板，它接着干完。`;
+用本机接好的 Agent 跑一遍完整流程：提问后结束这一轮，等你回复，再接着干完。`;
 
 const STATUS_USAGE = `用法：agent-autoloop status [--json]
 
@@ -157,6 +160,14 @@ rules.json 里这个定时任务要写 cwd；你答了，中台叫醒它的 Agen
   up: { flags: [], usage: "用法：agent-autoloop up" },
   update: { flags: [], usage: UPDATE_USAGE },
   why: { flags: ["json"], usage: "用法：agent-autoloop why <第几轮> [--json]" },
+  workflow: {
+    flags: ["json", "reason", "subject"],
+    usage: `用法：agent-autoloop workflow list [--json]
+      agent-autoloop workflow show <工作项编号> [--json]
+      agent-autoloop workflow start <规则> [--subject 对象] [--reason 说明] [--json]
+      agent-autoloop workflow pause|resume|cancel <工作项编号> [--reason 说明] [--json]
+暂停和取消根工作项也作用于它的子项。取消请求发出后，用 show 查看是否实际停止。`,
+  },
 };
 
 type Flags = Record<string, string | true>;
@@ -396,7 +407,7 @@ async function tryIt() {
       );
       if (!card) continue;
       asked = card.id;
-      console.log("\nAgent 结束了这一轮，问了你一个问题。它现在不占进程、不花 Token。");
+      console.log("\nAgent 结束了这一轮，问了你一个问题。等待期间不发新的模型请求，共享服务可以继续运行。");
       showCard(card);
       if (!process.stdin.isTTY) {
         console.log(`${howToAnswer(card)}\n答完运行 agent-autoloop status，能看到它接着把活干完。`);
@@ -506,7 +517,13 @@ async function doctor() {
       say(false, (error as Error).message);
     }
   }
-  if (serviceRunning()) say(true, "系统服务在跑");
+  if (process.platform === "win32") {
+    const status = windowsServiceStatus();
+    say(status.registered, `登录启动项${status.registered ? "已注册" : "未注册"}`);
+    say(status.managerRunning, `后台监管${status.managerRunning ? "在跑" : "没在跑"}`);
+    say(status.hubPid !== null, status.hubPid === null ? "本机中台进程未运行" : `本机中台进程 PID ${status.hubPid}`);
+    say(status.restartConfigured, `退出自动重启${status.restartConfigured ? "已配置（监管运行时生效）" : "未配置"}`);
+  } else if (serviceRunning()) say(true, "系统服务在跑");
   else if (systemUnit()) say(true, "系统级服务在跑");
   else say(false, "系统服务没在跑：agent-autoloop service install");
   try {
@@ -703,6 +720,48 @@ async function stop(args: string[]) {
   console.log("通知它停了。");
 }
 
+async function workflow(args: string[]) {
+  const { named, rest } = flags(args);
+  const [action, target] = rest;
+  const usage = TAKES.workflow.usage;
+  const allowed: Record<string, string[]> = {
+    list: ["json"],
+    show: ["json"],
+    start: ["json", "subject", "reason"],
+    pause: ["json", "reason"],
+    resume: ["json", "reason"],
+    cancel: ["json", "reason"],
+  };
+  if (!allowed[action] || rest.length !== (action === "list" ? 1 : 2)) return fail(usage);
+  if (Object.keys(named).some((key) => !allowed[action].includes(key))) return fail(usage);
+  if (Object.entries(named).some(([key, value]) => key !== "json" && typeof value !== "string")) return fail(usage);
+  const hub = ownerClient();
+  let result: any;
+  if (action === "list") result = await hub.workflows();
+  else if (action === "start")
+    result = await hub.run(target, { subject: text(named.subject), reason: text(named.reason) });
+  else {
+    const id = runOf(target, usage);
+    result =
+      action === "show"
+        ? await hub.workflow(id)
+        : await hub.workflowControl(id, action as "pause" | "resume" | "cancel", { reason: text(named.reason) });
+  }
+  if (named.json !== undefined) return console.log(JSON.stringify(result, null, 2));
+  if (action === "list" || action === "show") {
+    const { workflowLines } = await import("./workflow.ts");
+    return console.log(workflowLines(result, action === "show").join("\n"));
+  }
+  if (action === "start")
+    return console.log(`已排上工作流：执行轮 #${result.run}。运行 agent-autoloop workflow list 查看。`);
+  const message = {
+    pause: "暂停请求已记录，已准入的步骤会收尾",
+    resume: "恢复请求已记录，继续未完成的步骤",
+    cancel: "取消请求已记录，等待相关执行实际退出",
+  }[action];
+  console.log(`工作项 #${target}：${message}。`);
+}
+
 /** A command run right after starting the service would find no hub yet: this machine's is waited for, if it has one. */
 async function waitForHub() {
   const config = readConfig();
@@ -808,6 +867,7 @@ const commands: Record<string, () => unknown> = {
   tell: () => tell(args),
   ask: () => ask(args),
   stop: () => stop(args),
+  workflow: () => workflow(args),
   backup: () => backupCommand(args),
   restore: () => restoreCommand(args),
   update,

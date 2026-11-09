@@ -1,7 +1,9 @@
 // Failure modes: the Windows login task does not start the installed hub, its status is wrong, it leaves a window on the
-// desktop, a hub that stops isn't started again, an update keeps the old process, or removal leaves the hub running.
+// desktop, a hub that stops isn't started again, disabling login is mistaken for disabling the running supervisor's
+// restart loop, an update keeps the old process, or removal leaves the hub running.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -62,7 +64,7 @@ test(
   { skip: process.platform !== "win32" || !!process.env.CI },
   async () => {
     const scratch = mkdtempSync(join(tmpdir(), "agent-autoloop-service-"));
-    const home = join(scratch, "家 ' & 目录");
+    const home = join(scratch, "家 ' & %PATH% 目录");
     const person = join(scratch, "person");
     mkdirSync(person);
     process.env.AGENT_AUTOLOOP_HOME = home;
@@ -106,6 +108,12 @@ test(
       service.installService();
       await until(healthy, "the scheduled task did not start the hub");
       assert.ok(service.serviceRunning());
+      assert.deepEqual(service.windowsServiceStatus(), {
+        registered: true,
+        managerRunning: true,
+        hubPid: service.runningUp(),
+        restartConfigured: true,
+      });
       assert.deepEqual(
         terminalWindows(scratch).filter((title) => title.includes("node.exe")),
         [],
@@ -114,11 +122,22 @@ test(
 
       const first = service.runningUp();
       assert.ok(first);
+      const taskName = `agent-autoloop-${createHash("sha256").update(home).digest("hex").slice(0, 8)}`;
+      powershell(`Disable-ScheduledTask -TaskName ${psQuote(taskName)} | Out-Null`);
+      const disabled = service.windowsServiceStatus();
+      assert.equal(disabled.managerRunning, true, "disabling login stopped the current supervisor");
+      assert.equal(disabled.restartConfigured, true, "disabling login changed the supervisor's restart capability");
+      const identityFile = join(home, "up-process.json");
+      const identity = readFileSync(identityFile, "utf8");
+      writeFileSync(identityFile, JSON.stringify({ ...JSON.parse(identity), created: "a previous process" }));
+      assert.equal(service.runningUp(), null, "a reused PID was accepted as the original hub");
+      writeFileSync(identityFile, identity);
       process.kill(first);
       await until(async () => {
         const now = service.runningUp();
         return now !== null && now !== first && (await healthy());
       }, "a hub that stopped was not started again");
+      powershell(`Enable-ScheduledTask -TaskName ${psQuote(taskName)} | Out-Null`);
 
       const second = service.runningUp();
       service.restartService();
@@ -130,6 +149,12 @@ test(
       service.removeService();
       assert.equal(service.serviceRunning(), false);
       assert.equal(service.runningUp(), null, "removal left the hub running");
+      assert.deepEqual(service.windowsServiceStatus(), {
+        registered: false,
+        managerRunning: false,
+        hubPid: null,
+        restartConfigured: false,
+      });
     } finally {
       service.removeService();
       service.stopUp();

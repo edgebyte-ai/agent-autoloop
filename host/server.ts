@@ -115,6 +115,7 @@ export function makeHandler(commit = "dev") {
     environment: hub.environment,
     dispatch: hub.execute,
     state: hub.stateOf,
+    workflows: hub.workflowsOf,
     why: hub.why,
     card: hub.cardByToken,
     wait(until, signal) {

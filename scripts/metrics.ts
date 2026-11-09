@@ -1,5 +1,22 @@
 import assert from "node:assert/strict";
 import type { Server } from "node:http";
+import { setTimeout as delay } from "node:timers/promises";
+
+export async function waitForPolls<T extends { active: number }>(
+  sample: (signal: AbortSignal) => Promise<T>,
+  active: number,
+  timeoutMs: number,
+): Promise<T> {
+  if (timeoutMs <= 0) throw new DOMException("长轮询未在期限内到齐", "TimeoutError");
+  const signal = AbortSignal.timeout(Math.ceil(timeoutMs));
+  for (;;) {
+    signal.throwIfAborted();
+    const seen = await sample(signal);
+    signal.throwIfAborted();
+    if (seen.active === active) return seen;
+    await delay(10);
+  }
+}
 
 // Attach the rejection handler before starting the next batch; otherwise Node exits before cleanup.
 export const observe = <T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> =>

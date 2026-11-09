@@ -20,6 +20,8 @@ import {
   workers,
 } from "./query.ts";
 import { cronOf, eventRule, ruleOf, SCHEDULE, typeMatches, type Rule, type Rules } from "./rules.ts";
+import { workflowFunctions } from "./workflow.ts";
+import { parseWorkflowAdvance } from "../protocol/workflow.ts";
 import {
   addUsage,
   ANSWER_BY,
@@ -67,7 +69,7 @@ const DEFAULTS: Partial<Record<Table, Row>> = {
 
 type Given = { type: string; seq: number; now: number; at: string; env: Environment; rules: Rules };
 /** One input being decided: what holds throughout, and the view with its changes so far. */
-type Draft = Given & { view: View; changes: Change[] };
+export type Draft = Given & { view: View; changes: Change[] };
 
 export function decide(view: View, input: Input, now: number, env: Environment): { facts: Fact[]; value: any } {
   const { type, args } = input;
@@ -109,6 +111,7 @@ function add(draft: Draft, table: Table, fields: Row) {
 
 const ruleNamed = (draft: Draft, name: string) => ruleOf(draft.rules, name);
 function assignQueued(draft: Draft, run: Row) {
+  if (run.workflow) return;
   const config = draft.view.get("config", "rules")!;
   const rule = ruleOf(config.value as Rules, run.rule);
   if (!rule) return;
@@ -187,6 +190,7 @@ function enqueue(draft: Draft, rule: Rule, event: number, lane: string, resume?:
     rows(draft.view, "runs", { rule: rule.name, lane, state: "queued" })[0] ??
     add(draft, "runs", { rule: rule.name, agent: rule.to, grp: rule.group, lane, state: "queued", ...stamps });
   put(draft, "run_events", `${run.id}:${event}`, { run_id: run.id, event_id: event });
+  workflow.create(draft, run, rule);
   if (resume) put(draft, "runs", run.id, { resume });
   return run.id as number;
 }
@@ -314,9 +318,9 @@ function claimNext(draft: Draft, worker: string, claim: string) {
   };
   const claimable = (run: Row) =>
     run.state === "queued" &&
-    agents.includes(ruleNamed(draft, run.rule)?.to ?? "") &&
+    (run.workflow ? workflow.claimable(draft, run, worker) : agents.includes(ruleNamed(draft, run.rule)?.to ?? "")) &&
     Date.parse(run.not_before) <= draft.now &&
-    unpaused(run.rule) &&
+    (run.workflow ? !pauseOf(draft.view, { name: run.rule } as Rule, draft.now) : unpaused(run.rule)) &&
     !claimed.some((other) => other.grp === run.grp && other.lane === run.lane) &&
     claimed.filter((other) => other.grp === run.grp).length < groupLimit(run.grp);
   // The same claim again means the answer got lost: it gets back the run it already has.
@@ -325,10 +329,10 @@ function claimNext(draft: Draft, worker: string, claim: string) {
   if (!run) return null;
   if (!held) {
     assignQueued(draft, run);
-    settleSession(draft, draft.view.get("runs", run.id)!);
+    if (!run.workflow) settleSession(draft, draft.view.get("runs", run.id)!);
   }
   const since = held ? { claimed_at: run.claimed_at, link: run.link } : { claimed_at: draft.at, link: null };
-  const rules_version = held ? run.rules_version : draft.view.get("config", "rules")!.version;
+  const rules_version = held || run.workflow ? run.rules_version : draft.view.get("config", "rules")!.version;
   const claiming = { state: "claimed", claim, issued: draft.seq, seen_at: draft.at, rules_version, ...since };
   put(draft, "runs", run.id, { ...claiming, ...nulls("last_issued", "last_result", "last_answer") });
   return jobOf(draft.view, draft.view.get("runs", run.id)!, draft.env);
@@ -453,6 +457,7 @@ function finish(draft: Draft, id: number, token: string, given: unknown) {
     return { rejected: JSON.parse(prior.last_answer ?? "[]"), duplicate: true };
   }
   const run = heldRun(draft, id, token, ["claimed", "unknown"]);
+  if (run.workflow) throw new InputError("工作流步骤通过工作流接口交结果");
   const result = parseResult(given);
   const session = result.session ?? run.session;
   const usage = result.usage
@@ -508,7 +513,8 @@ function answer(draft: Draft, id: number, given: Row) {
   const eventId = recordEvent(draft, card.source ?? SCHEDULE, event, rule ? [rule.name] : []);
   const decision = { choice: given.choice ?? null, answer: text, by: given.by ?? null, decided_at: draft.at };
   put(draft, "cards", id, { state: "decided", ...decision, answer_event: eventId, version: card.version + 1 });
-  if (rule) enqueue(draft, rule, eventId, card.lane, card.agent === rule.to ? card.session : null);
+  if (card.workflow) workflow.answered(draft, draft.view.get("cards", id)!);
+  else if (rule) enqueue(draft, rule, eventId, card.lane, card.agent === rule.to ? card.session : null);
   return { changed: true, state: "decided" };
 }
 
@@ -657,10 +663,14 @@ const CONTROL = {
 };
 
 /** Every input there is, each with its arguments named. What one returns is what the caller is told. */
+const workflow = workflowFunctions({ put, add, createCard });
 const HANDLERS: Record<string, (draft: Draft, ...args: any[]) => unknown> = {
+  workflowAdvance: (draft, id, token, body) => workflow.advance(draft, id, token, parseWorkflowAdvance(body)),
+  workflowControl: (draft, id, action, by, body) => workflow.control(draft, id, action, by, body),
   rules(draft, rules) {
     put(draft, "config", "rules", { value: rules, version: draft.seq });
     for (const run of rows(draft.view, "runs", { state: "queued" })) {
+      if (run.workflow) continue;
       if (ruleOf(rules, run.rule)) assignQueued(draft, run);
       else stopRun(draft, run, "rule-gone", ...ruleGone(run));
     }
@@ -726,6 +736,7 @@ const HANDLERS: Record<string, (draft: Draft, ...args: any[]) => unknown> = {
   cancel(draft, id) {
     const run = draft.view.get("runs", id);
     if (!run) throw new NotFound("没有这一轮");
+    if (run.workflow) return workflow.control(draft, run.workflow, "cancel", "本人");
     if (run.state === "queued") {
       put(draft, "runs", id, { state: "cancelled", finished_at: draft.at });
       closeStopped(draft, id, "已停止");

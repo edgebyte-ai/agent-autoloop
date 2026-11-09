@@ -12,7 +12,11 @@ Windows PowerShell：
 irm https://raw.githubusercontent.com/KKKKhazix/agent-autoloop/main/install.ps1 | iex
 ```
 
-默认安装在 `$env:USERPROFILE\.agent-autoloop`，命令目录加入当前进程及用户 PATH。Windows 10 和 11 都能装，不需要管理员：后台服务是当前账号自己的登录任务。例外是 Windows 自带的 Administrator 账号（开着 UAC 时）：不提权建不了登录任务，提权建出来的任务又会让中台和它派的 Agent 带着完整的管理员权限，所以 `service install` 会拒绝并打印一行 PowerShell，改用「启动」文件夹在登录时以普通权限拉起中台。Windows 服务在本人登录后于后台常驻、不开窗口，退出 10 秒后自动重启，注销后停止；通过 SSH 管理时也可用 `service install`，任务会在 Windows 已登录的会话中运行；Codex 0.167 的原生沙箱在 OpenSSH 会话中会出现 runner pipe-in 超时，本机登录会话正常，见 [Codex 已知问题](https://github.com/openai/codex/issues/37722)。中台起不来、日志里是 `listen EACCES` 时，多半是 Hyper-V、WSL 把端口划进了系统保留范围：`netsh int ipv4 show excludedportrange protocol=tcp` 查看，在 `config.json` 里换一个范围外的端口。CI 或普通命令测试用 `--no-service`，再运行安装器打印的完整命令启动 `up`。桌面通知只在同一登录会话显示。
+默认安装在 `$env:USERPROFILE\.agent-autoloop`，命令目录加入当前进程及用户 PATH。Windows 10 和 11 不需要管理员：后台服务是当前账号自己的登录任务。例外是 Windows 自带的 Administrator 账号（开着 UAC 时）：不提权建不了登录任务，提权建出来的任务又会让中台和它派的 Agent 带着完整的管理员权限。所以 `service install` 会拒绝并打印一行 PowerShell，改用「启动」文件夹在登录时以普通权限拉起中台。
+
+Windows 登录任务先调用 PowerShell 启动脚本，再由 wscript 隐藏监管中台。启动参数编码传递，保留路径中的 `%NAME%` 等文字。监管程序在中台退出 10 秒后重启中台；计划任务还配置了监管程序失败后每分钟重试，最多 999 次。登录后启动、当前运行和故障重启是三件事。`agent-autoloop doctor` 分别显示启动项是否注册、监管程序是否运行、核对过命令行的中台 PID，以及故障重启是否已配置。启动文件夹方式使用同一启动程序，但没有注册计划任务。上述状态不能替代中台连接检查，也不表示无人登录时会作为系统服务运行。
+
+通过 SSH 管理时可用 `service install`，任务在 Windows 已登录的会话中运行。Codex 0.167 的原生沙箱在 OpenSSH 会话中可能出现 runner pipe-in 超时，见 [Codex 已知问题](https://github.com/openai/codex/issues/37722)。中台起不来、日志里是 `listen EACCES` 时，用 `netsh int ipv4 show excludedportrange protocol=tcp` 查看系统保留端口，在 `config.json` 里换一个范围外的端口。CI 或普通命令测试用 `--no-service`，再运行安装器打印的完整命令启动 `up`。桌面通知只在同一登录会话显示。
 
 本地仓库安装示例：
 
@@ -35,7 +39,7 @@ WSL2 仍按 Linux 安装；常驻服务需要发行版开启 systemd，没开则
 curl -fsSL https://raw.githubusercontent.com/KKKKhazix/agent-autoloop/main/install.sh | sh
 ```
 
-GitHub Issue 轮询和 PR 交付等功能另需已登录的 `gh`，按对应场景说明配置；运行 Agent 也仍需该 Agent 自己的登录或授权。中台在后台启动 Agent，桌面应用里能用的浏览器和电脑操作它不一定用得上（比如 Codex 应用里的 Chrome，后台的 `codex exec` 用不到）；要它操作网页，照[浏览器接入](docs/plugins.md#浏览器接入)配好，再用后台的启动方式实际跑一次。
+GitHub Issue 轮询和 PR 交付等功能另需已登录的 `gh`，按对应场景说明配置；运行 Agent 也仍需该 Agent 自己的登录或授权。中台在后台启动 Agent，不能把桌面应用中的浏览器连接当成后台也可用。Codex 使用 worker 持有的 `codex app-server`；要它操作网页，照[浏览器接入](docs/plugins.md#浏览器接入)配好，再用同一后台方式实际跑一次。
 
 安装和 `agent-autoloop update` 都装最新的 Release，那是通过了全部检查的版本，`main` 上还没发布的改动要等下一个 Release。
 
@@ -54,6 +58,16 @@ AGENT_AUTOLOOP_REPO=/path/to/agent-autoloop sh /path/to/agent-autoloop/install.s
 安装器和中台启动时在 macOS/Linux 把数据目录设为 `0700`，Windows 则用 ACL 只允许本人和 SYSTEM 访问，包括已有目录，阻止其他系统用户读取数据库、事件和运行输出。Codex 的 Windows 沙箱会给用户目录下的文件夹加上它的账号的读权限，数据目录也在内；中台启动时收回，在那之前沙箱里的命令能读到主密钥和配置里的密钥。插件另外给每轮的 `context.json` 加这个读权限。升级后同步重启中台与接单程序；新版 `status` 使用中台提供的费用汇总。
 
 升级时若投影格式有变化，会自动从旧日志逐条重建，历史多时首次启动需要等待；之后正常启动直接复用投影。原日志和已有卡片链接保留，不需要手动迁移。
+
+从旧 Windows 版本升级前，先让普通执行轮结束。旧版在途进程使用匿名 Job Object，缺少新版的命名记录；升级后若父进程消失，中台不能据此证明整棵进程树退出，会保留未知或阻塞。已完成历史与旧规则配置仍可用。
+
+### Codex 的常驻连接
+
+已有 `use: "codex"` 不用改。先安装并登录支持 app-server 的原生 Codex CLI；中台沿用 CLI 的 provider 配置，不复制登录凭据、不强制指定 provider。worker 首次接到 Codex 任务时启动一份 app-server，一轮结束后保留进程。每个工作项和角色各用自己的 thread；已有 thread 在下一轮继续使用。
+
+`model`、`effort`、`access` 和 `program` 仍写在 Agent 配置里。同一 worker 的 Codex Agent 使用相同的 `program`。`threadIdleMinutes` 可配置空闲 thread 的卸载时间，默认 120 分钟；卸载后继续时使用 resume，不删除历史。等待人工回答时不发新模型请求，共享 app-server 可以继续运行。
+
+Windows 直接运行原生 CLI，不通过 WSL。普通命令在独立 Job Object 中运行并保存输出、退出码；worker 重启后继续核对原执行。共享 app-server 与 worker 生命周期绑定，worker 退出后清理其进程树，恢复时先核对保存的 thread、turn 和结果。启动或停止状态不能确认时保留未知，不能因父 PID 不见了就报告整棵进程树已停止。
 
 ## 临时 HOME、CI 或没有服务管理器
 
@@ -95,6 +109,8 @@ Claude 要委托 Codex 处理网页时，可用[浏览器交接模板](examples/
 
 国内业务可从反馈处理、网站巡检、飞书周报与业务摘要三套模板开始。它们默认飞书本人私聊；替换占位符后，配置和业务资料留在私有目录，不提交到仓库。模板不替用户新建凭据或扩大飞书权限。
 
+要配置多角色审查、子工作项或本机命令步骤，从[工作流示例](examples/workflows/README.md)选择模板，再按[工作流说明](docs/workflows.md)启用。只有规则显式写了 `workflow` 才进入工作流；普通规则继续原来的用法。不要把带发布命令的 coding 模板用于未授权的仓库。
+
 桌面通知只在这台电脑上显示。需要别的通道时，先确认接收位置，再按配置手册接入。不要直接测试发信或发群消息。`access` 的含义见[插件说明](docs/plugins.md#access-实际能做什么)，不要替用户扩大权限。
 
 ## 卸载
@@ -113,7 +129,10 @@ agent-autoloop uninstall
 
 - [配置手册](skills/agent-autoloop/SKILL.md)：接事件插件、通道、多台电脑和交付流水线。
 - [协议](docs/protocol.md)：HTTP、回执、事实日志和故障恢复。
+- [工作流](docs/workflows.md)：模板、预算、查询、暂停、恢复和取消。
 - [插件](docs/plugins.md)：三个可运行的最小例子。
 - [安全边界](SECURITY.md)：密钥、执行权限和交付审查。
 
 Windows 开发检查用 `npm run test:windows` 与 `node scripts/install-smoke-windows.ts`。Linux/macOS 用 `npm run test:quick`（改了 `kernel/`、`protocol/`、`sim/` 时用 `npm test`）、`npm run typecheck`、`npm run format:check`，完整故障检查和性能实测用 `npm run test:nightly`。备份和恢复见[配置手册](skills/agent-autoloop/SKILL.md#日志与恢复)。`master.key` 坏了中台会拒绝启动：从备份恢复；没有备份就删掉它，重启会生成新的，已发出的卡片链接和正在跑的轮次会失效。
+
+要核实交付插件和新 coding 工作流的真实 GitHub 写入，按[GitHub 交付验收](docs/workflows.md#真实-github-交付验收)使用已授权的专用私有仓库。

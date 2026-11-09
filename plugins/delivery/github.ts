@@ -53,7 +53,18 @@ export function createIO(repo: string, folder: string): DeliveryIO {
       git(bare, "remote", "add", "origin", `https://github.com/${repo}.git`);
       initialized = true;
     }
-    git(bare, "fetch", "--no-tags", "origin", ...refs);
+    // The API already uses gh's login; a desktop credential manager can block this background fetch.
+    git(
+      bare,
+      "-c",
+      "credential.helper=",
+      "-c",
+      "credential.helper=!gh auth git-credential",
+      "fetch",
+      "--no-tags",
+      "origin",
+      ...refs,
+    );
   };
   const ancestors = new Map<string, boolean>();
   return {

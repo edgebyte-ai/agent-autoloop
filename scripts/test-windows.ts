@@ -33,8 +33,13 @@ const unix = new Set([
 const files = readdirSync("tests")
   .filter((file) => file.endsWith(".test.ts") && file !== "simulation.test.ts" && !unix.has(file.slice(0, -8)))
   .map((file) => `tests/${file}`);
-const result = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", "--test", ...files], {
-  stdio: "inherit",
-});
+// Each native process test also starts PowerShell; unbounded file concurrency can exhaust SQLite's five-second lock wait.
+const result = spawnSync(
+  process.execPath,
+  ["--disable-warning=ExperimentalWarning", "--test", "--test-concurrency=4", ...files],
+  {
+    stdio: "inherit",
+  },
+);
 if (result.error) throw result.error;
 process.exitCode = result.status ?? 1;

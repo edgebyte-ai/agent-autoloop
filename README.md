@@ -4,7 +4,7 @@
 
 **中文** | [English](README.en.md)
 
-[上手](#上手) · [场景模板](#拿来即用的场景模板) · [插件](#插件体系四个方向都能自由替换) · [内核](#内核的四个机制) · [文档](#更多文档)
+[上手](#上手) · [工作流](#多步骤工作流) · [场景模板](#拿来即用的场景模板) · [插件](#插件体系四个方向都能自由替换) · [内核](#内核的四个机制) · [文档](#更多文档)
 
 ![架构图](docs/architecture.svg)
 
@@ -36,18 +36,18 @@ curl -fsSL https://raw.githubusercontent.com/KKKKhazix/agent-autoloop/main/insta
 
 安装和 `agent-autoloop update` 都装最新的 [Release](https://github.com/KKKKhazix/agent-autoloop/releases)，那是通过了全部检查的版本。
 
-装好后用你本机的 Agent 真实走一遍“提问 → 退出等回复 → 拍板 → 接着干完”：
+装好后用你本机的 Agent 真实走一遍“提问 → 结束本轮等回复 → 拍板 → 接着干完”：
 
 ```bash
 agent-autoloop try
 ```
 
-下面是在终端里的真实输出：
+终端会显示提问卡片，例如：
 
 ```text
 事件发出去了，Agent 开始干活……
 
-Agent 结束了这一轮，问了你一个问题。它现在不占进程、不花 Token。
+Agent 结束了这一轮，问了你一个问题。等待期间不再发起模型执行。
 
 【等你决定】#1 试跑：选一个颜色
 这是一次试跑，选哪个都行。
@@ -65,8 +65,8 @@ Agent 结束了这一轮，问了你一个问题。它现在不占进程、不�
 
 1. **新事件进来。** 早上 9 点的定时任务、GitHub 上新提的 Issue、业务系统报的错，都变成一条标准事件送进内核。
 2. **按规则派活。** 内核照你写的规则，决定交给哪个 Agent、去哪个目录干。同一件事排队时又来的消息，会合并成一轮处理。
-3. **干完一轮就退出。** Agent 把结果写在最后一条回复里，进程直接退出。
-4. **拿不准才问你。** 碰到删数据、重启服务、花钱、对外发消息这类事，内核通过飞书或桌面通知发一张卡片给你。等你回复期间，它不占后台进程，也不消耗 Token。
+3. **交回结果，结束本轮。** Agent 把结果写在最后一条回复里。普通命令退出；Codex 结束对应 Turn，worker 保留共享的 app-server。
+4. **拿不准才问你。** 碰到删数据、重启服务、花钱、对外发消息这类事，内核通过飞书或桌面通知发一张卡片给你。等待回复时释放执行名额，不再发起模型执行；共享 app-server 可以常驻。
 5. **点一下，接着干。** 你选完，它接上原来的对话，把剩下的活干完。
 
 能自己搞定的事走图上方的自动闭环：直接办完，或者约个时间（比如半小时后）再醒来复查，全程不打扰你。
@@ -125,6 +125,28 @@ Agent 结束了这一轮，问了你一个问题。它现在不占进程、不�
 
 除了提问（`ask`），还能发通知（`notice`）、关闭已解决的卡片（`resolve`）、预约复查（`later`）和触发新事件（`events`）。通告不需要回答，但结案时可以顺手写一句处理说明，这句话会留在卡片上；只是告诉一声的通告标成 `fyi`，不带按钮。万一 JSON 写错了，中台只让它在原会话里重写最后这段回复，不会把已经干完的业务重做一遍；重写也失败时，保留原结论并通知你回执没有生效（通用命令没有会话，直接走这一步）。接着旧会话跑也一样：会话接不上才开新的；接上了、干到一半断了，就算没跑成，过几分钟回到原会话重试，不开新会话重做。同一事项的新事件默认开新会话；规则写 `"resume": true` 就接着上一轮的会话。
 
+Codex 的恢复先核对原 thread、turn 和已保存结果。请求结果不明时保留阻塞，不静默新建会话。工作流的回执异常也保留已执行结果；每个新增模型 Turn 都重新经过中台准入和预算。
+
+## 多步骤工作流
+
+需要独立审查、反复修复、运行本机命令或拆分子项时，在规则里显式写 `workflow`，引用 `rules.json` 的 `workflows` 定义。普通规则不用改。中台用现有队列、事实日志和卡片保存步骤、依赖、角色会话和累计预算；worker 在同一台电脑上完成一个工作项内的步骤。
+
+[工作流示例](examples/workflows/README.md)提供 `single`、双 Reviewer 的 `drdr`、带计划审查和子项的 `recursive_prdr`，以及 coding、文档和数据流程。它们共用一个执行器。运行中的工作流保留启动时的定义，后续配置修改只影响新工作流。
+
+按示例替换路径和接单电脑、检查配置后运行：
+
+```bash
+agent-autoloop check
+agent-autoloop workflow start <规则名>
+agent-autoloop workflow list
+agent-autoloop workflow show <工作项编号> --json
+agent-autoloop workflow pause <工作项编号>
+agent-autoloop workflow resume <工作项编号>
+agent-autoloop workflow cancel <工作项编号>
+```
+
+`show` 可查看父子项、步骤、执行次数、角色 thread、结果和等待原因。暂停阻止下一步准入，已开始的步骤在暂停点收尾；取消要等本工作项的执行确认退出。等待人工或子项时不占执行名额，也不继续请求模型。配置格式、预算和恢复方式见[工作流说明](docs/workflows.md)。
+
 ## 拿来即用的场景模板
 
 每套模板都带规则、任务 Skill 和启用说明。
@@ -157,7 +179,9 @@ Agent 结束了这一轮，问了你一个问题。它现在不占进程、不�
 | **通道**：去哪找你拍板 | [桌面通知](plugins/desktop/channel.ts)（默认开启）、[飞书](plugins/feishu/channel.ts)、[钉钉 / 企微 / Slack / Discord](plugins/webhook/templates.ts) | [说明](skills/agent-autoloop/SKILL.md#接一个通道) |
 | **交付**：把 CI/CD 也做成插件 | [`delivery`](plugins/delivery/delivery.ts) | [说明](skills/agent-autoloop/SKILL.md#交付流水线) |
 
-**实测情况：** Claude Code、Codex 和 ACP（官方 Codex ACP 适配器）跑通了多轮问答和跨进程会话续接；飞书跑通了发送、按钮回调和卡片更新；四种 Webhook 模板只在本地模拟服务上验证过，GitLab Webhook 按官方文档的格式测试，没连过真实 GitLab。这些文字通道靠回答链接拍板，要把 `hub.publicUrl` 配成手机或电脑能打开的地址。
+**已有实测：** Claude Code 和 ACP（官方 Codex ACP 适配器）跑通了多轮问答和跨进程会话续接；飞书跑通了发送、按钮回调和卡片更新；四种 Webhook 模板只在本地模拟服务上验证过，GitLab Webhook 按官方文档的格式测试，没连过真实 GitLab。这些文字通道靠回答链接拍板，要把 `hub.publicUrl` 配成手机或电脑能打开的地址。
+
+**Codex 常驻连接。** `use: "codex"` 直接使用本机 `codex app-server`，沿用 CLI 自己的 provider 配置，不修改用户配置。worker 按需启动并复用一份进程；不同工作项与角色各用独立 thread，修复或复审继续原 thread。等待期间没有新的模型执行；空闲 thread 默认 120 分钟后卸载，后续再恢复，可用 Agent 的 `threadIdleMinutes` 配置。进程和 thread 复用不保证模型缓存命中。
 
 **内置 Agent 走第三方网关。** Claude Code、Codex 要接第三方模型服务，或者启动前要先设好环境变量，写一个设好变量再启动它的小脚本，在 Agent 里写 `"program": "脚本路径"`，会话续接和用量统计照旧，见[说明](skills/agent-autoloop/SKILL.md#接一个-agent)。
 
@@ -180,9 +204,9 @@ Agent 结束了这一轮，问了你一个问题。它现在不占进程、不�
 
 ## 内核的四个机制
 
-内核约 1850 行代码、零运行时依赖。它不读系统时钟、不用随机数、不向外发请求，插件主动连进来，账号凭据留在各自的插件里；同样的输入永远得出同样的结果。它把四个计算机领域的成熟做法用到了命令行 Agent 上：
+内核没有运行时依赖。它不读系统时钟、不用随机数、不向外发请求，插件主动连进来，账号凭据留在各自的插件里；同样的输入永远得出同样的结果。它把四个计算机领域的成熟做法用到了命令行 Agent 上：
 
-- **挂起零消耗**：等你拍板时进程直接退出，等待状态存在数据库里，Agent 不用一直挂着。你三天没回，这三天就没有 Agent 进程在跑、不花 Token，只有很轻的中台在后台等着；你一回答，它接着原来的对话继续干。
+- **一轮不等人**：等待状态保存在事实日志里，等你拍板或等子项时结束当前执行轮，释放名额，不再请求模型。Codex 的共享 app-server 可以保留进程；回答到达后，原工作项接着原角色会话继续干。
 - **事件溯源**：所有状态都从一条只追加的日志算出来，日志和索引在同一个事务里写进磁盘，写完才应答。进程被强杀，已经确认的事不丢（整机断电没有单独测过）；任何一轮为什么跑、结果是什么，一条命令就能查清；数据格式变了就从日志重建，不用写迁移脚本。
 - **指令数据分离**：思路和 SQL 参数化一样。Issue 的标题和正文等外部文字只作为资料放进文件，不拼进提示词，提示词里只有校验过字符的类型、编号和链接；用哪个 Agent、在哪个目录、什么权限，只由你本机的规则决定，事件里带 `cwd`、`agent`、`access` 字段会被直接拒收。
 - **跳数熔断**：思路和网络包的 TTL 一样。Agent 交回的事件会再派给 Agent，层数一路累加，经过人工提问和定时复查也不清零，Agent 自己改不了；超过 8 层就只记录、不再派活，并发一张卡片告诉你。
@@ -210,7 +234,7 @@ Windows 用 `npm run test:windows` 和 `node scripts/install-smoke-windows.ts`�
 
 ### 实测性能
 
-Apple M5 Pro、24 GB、Node 24.21.0。写入逐条提交，事务落盘后才应答。
+以下是加入常驻连接与工作流前的实测：Apple M5 Pro、24 GB、Node 24.21.0。写入逐条提交，事务落盘后才应答；这些数字不包括常驻 app-server 的内存和模型调用。
 
 | 指标 | 实测 |
 |---|---:|
@@ -236,6 +260,7 @@ Apple M5 Pro、24 GB、Node 24.21.0。写入逐条提交，事务落盘后才应
 
 - [安装说明](INSTALL.md)
 - [规则与交付流水线配置手册](skills/agent-autoloop/SKILL.md)
+- [工作流配置、观察与控制](docs/workflows.md)
 - [如何编写插件](docs/plugins.md)
 - [完整通信协议](docs/protocol.md)
 - [安全边界说明](SECURITY.md)
@@ -254,6 +279,7 @@ Apple M5 Pro、24 GB、Node 24.21.0。写入逐条提交，事务落盘后才应
 | `cli/`、`bin/` | 用户命令及启动入口，包括状态、回答、`why`、MCP、更新与卸载 |
 | `plugins/` | 内置 Agent、事件、通道和交付插件 |
 | `examples/recipes/` | 完整场景：规则、任务 Skill 和启用说明 |
+| `examples/workflows/` | 多步骤工作流、独立审查、子项及 coding / 非 coding 示例 |
 | `examples/plugins/`、`examples/skills/`、`examples/*.sh` | 最小插件模板、独立任务手册和 Shell 示例 |
 | `skills/agent-autoloop/` | 中台的正式配置与操作手册，安装时也提供给 Agent 使用 |
 | `docs/` | 通信协议、插件开发说明与中英文架构图 |

@@ -72,18 +72,18 @@ text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK S
 <!-- Center: Autoloop kernel -->
 <rect class="core" x="250" y="68" width="460" height="316" rx="22"/>
 <text x="272" y="102" class="cte">Autoloop kernel</text>
-<text x="688" y="101" class="cs" text-anchor="end">~1,650 lines · 0 deps · Deterministic</text>
+<text x="688" y="101" class="cs" text-anchor="end">0 deps · Deterministic</text>
 
 <!-- Core responsibility -->
 <rect class="duty" x="268" y="116" width="424" height="52" rx="10"/>
 <text x="480" y="139" class="cn" text-anchor="middle">Dispatches work by your rules</text>
-<text x="480" y="158" class="cd" text-anchor="middle">Picks which agent &amp; folder · merges duplicate events</text>
+<text x="480" y="158" class="cd" text-anchor="middle">Assigns items · records steps, dependencies &amp; budgets</text>
 
 <!-- 4 kernel mechanism tags -->
 <rect class="chip" x="268" y="180" width="424" height="40" rx="9"/>
 <rect class="tag" x="276" y="187" width="100" height="26" rx="6"/>
-<text x="326" y="204" class="tn" text-anchor="middle">Zero-cost wait</text>
-<text x="386" y="204" class="td">Exits while waiting for you; 0 tokens, resumes chat</text>
+<text x="326" y="204" class="tn" text-anchor="middle">Yield on wait</text>
+<text x="386" y="204" class="td">Waits release slots; shared connections can stay alive</text>
 
 <rect class="chip" x="268" y="228" width="424" height="40" rx="9"/>
 <rect class="tag" x="276" y="235" width="100" height="26" rx="6"/>
@@ -118,7 +118,7 @@ text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK S
 <rect class="item" x="778" y="142" width="146" height="36" rx="8"/>
 <text x="851" y="165" class="r" text-anchor="middle">Claude Code</text>
 <rect class="item" x="778" y="188" width="146" height="36" rx="8"/>
-<text x="851" y="211" class="r" text-anchor="middle">Codex</text>
+<text x="851" y="211" class="r" text-anchor="middle">Codex app-server</text>
 <rect class="item" x="778" y="234" width="146" height="36" rx="8"/>
 <text x="851" y="257" class="r" text-anchor="middle">DeepSeek Harness</text>
 <rect class="item" x="778" y="280" width="146" height="36" rx="8"/>

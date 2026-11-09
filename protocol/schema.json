@@ -410,7 +410,9 @@
           "minLength": 1,
           "pattern": "\\S"
         },
-        "ask": { "$ref": "#/$defs/ask" }
+        "ask": {
+          "$ref": "#/$defs/ask"
+        }
       },
       "required": ["task", "ask"],
       "additionalProperties": false
@@ -499,6 +501,11 @@
             "timeout": {
               "type": "integer",
               "minimum": 1
+            },
+            "threadIdleMinutes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
             }
           },
           "required": ["id", "name", "use", "access"],
@@ -559,6 +566,9 @@
           "items": {
             "type": "string"
           }
+        },
+        "workflow": {
+          "$ref": "#/$defs/workflow-job"
         }
       },
       "required": ["run", "token", "attempt", "rule", "agent", "session", "askFirst", "context"],
@@ -713,27 +723,75 @@
       "description": "What became of an event, read with the key of the source that sent it.",
       "type": "object",
       "properties": {
-        "event": { "type": "integer", "minimum": 1 },
-        "routed": { "type": "array", "items": { "type": "string", "maxLength": 200 } },
-        "paused": { "type": "array", "items": { "type": "string", "maxLength": 200 } },
+        "event": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "routed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "paused": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
         "runs": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "run": { "type": "integer", "minimum": 1 },
-              "rule": { "type": "string", "maxLength": 200 },
-              "state": { "enum": ["queued", "claimed", "unknown", "done", "nothing", "cancelled"] },
-              "attempts": { "type": "integer", "minimum": 0 },
-              "error": { "type": ["string", "null"] },
-              "finishedAt": { "anyOf": [{ "type": "null" }, { "type": "string", "format": "date-time" }] },
+              "run": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "rule": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "state": {
+                "enum": ["queued", "claimed", "unknown", "done", "nothing", "cancelled"]
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "error": {
+                "type": ["string", "null"]
+              },
+              "finishedAt": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                ]
+              },
               "summary": {
                 "description": "Null until it ends, and whenever the run also took another source's events.",
                 "type": ["string", "null"]
               },
               "events": {
                 "description": "What its receipt sent; null whenever the run also took another source's events.",
-                "anyOf": [{ "type": "null" }, { "type": "array", "items": { "$ref": "#/$defs/event" } }]
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/$defs/event"
+                    }
+                  }
+                ]
               }
             },
             "required": ["run", "rule", "state", "attempts", "error", "finishedAt", "summary", "events"],
@@ -962,6 +1020,918 @@
       },
       "required": ["card", "title", "choice", "at"],
       "additionalProperties": true
+    },
+    "workflow-job": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "root": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": ["item", "root"],
+      "additionalProperties": false
+    },
+    "workflow-budget": {
+      "type": "object",
+      "properties": {
+        "turns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "activeMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "children": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": ["turns", "activeMs", "concurrency", "depth", "children"],
+      "additionalProperties": false
+    },
+    "workflow-role": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "skill": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "effort": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      },
+      "required": ["agent"],
+      "additionalProperties": false
+    },
+    "workflow-child": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "template": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "after": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        },
+        "input": {},
+        "goal": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      },
+      "required": ["id", "template"],
+      "additionalProperties": false
+    },
+    "workflow-step": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "after": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            },
+            "next": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "minItems": 1
+                }
+              ]
+            },
+            "on": {
+              "type": "object",
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    "minItems": 1
+                  }
+                ]
+              }
+            },
+            "maxAttempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "input": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            },
+            "output": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            },
+            "kind": {
+              "const": "agent"
+            },
+            "role": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "skill": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "required": ["kind", "role"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "after": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            },
+            "next": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "minItems": 1
+                }
+              ]
+            },
+            "on": {
+              "type": "object",
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    "minItems": 1
+                  }
+                ]
+              }
+            },
+            "maxAttempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "input": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            },
+            "output": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            },
+            "kind": {
+              "const": "command"
+            },
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            },
+            "reconcile": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            }
+          },
+          "required": ["kind", "command"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "after": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            },
+            "next": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "minItems": 1
+                }
+              ]
+            },
+            "on": {
+              "type": "object",
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    "minItems": 1
+                  }
+                ]
+              }
+            },
+            "maxAttempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "input": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            },
+            "output": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            },
+            "kind": {
+              "const": "workflow"
+            },
+            "template": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "required": ["kind", "template"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "after": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            },
+            "next": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "minItems": 1
+                }
+              ]
+            },
+            "on": {
+              "type": "object",
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    "minItems": 1
+                  }
+                ]
+              }
+            },
+            "maxAttempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "input": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            },
+            "output": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            },
+            "kind": {
+              "const": "workflow"
+            },
+            "children": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/workflow-child"
+              },
+              "minItems": 1
+            }
+          },
+          "required": ["kind", "children"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "after": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            },
+            "next": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "minItems": 1
+                }
+              ]
+            },
+            "on": {
+              "type": "object",
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    "minItems": 1
+                  }
+                ]
+              }
+            },
+            "maxAttempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "input": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            },
+            "output": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            },
+            "kind": {
+              "const": "workflow"
+            },
+            "planFrom": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "templates": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            }
+          },
+          "required": ["kind", "planFrom", "templates"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "workflow-definition": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "minItems": 1
+            }
+          ]
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/workflow-role"
+          }
+        },
+        "steps": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/workflow-step"
+          }
+        },
+        "budget": {
+          "$ref": "#/$defs/workflow-budget"
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      },
+      "required": ["start", "roles", "steps", "budget"],
+      "additionalProperties": false
+    },
+    "workflow-execution": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "step": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "kind": {
+          "enum": ["agent", "command", "workflow"]
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "agent": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "use": {
+              "type": "string"
+            },
+            "worker": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "effort": {
+              "type": "string"
+            },
+            "access": {
+              "enum": ["read", "edit", "full"]
+            },
+            "command": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "program": {
+              "type": "string"
+            },
+            "timeout": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "threadIdleMinutes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": ["id", "name", "use", "access"],
+          "additionalProperties": true
+        },
+        "cwd": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "skill": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "session": {
+          "type": ["string", "null"]
+        },
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "minItems": 1
+        },
+        "reconcile": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "minItems": 1
+        },
+        "input": {},
+        "outputs": {
+          "type": "object"
+        },
+        "goal": {
+          "type": "string"
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeLimitMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": ["id", "step", "attempt", "kind", "cwd", "session", "input", "outputs", "goal"],
+      "additionalProperties": false
+    },
+    "workflow-completion": {
+      "type": "object",
+      "properties": {
+        "execution": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "outcome": {
+          "enum": ["done", "failed", "waiting", "cancelled", "blocked"]
+        },
+        "decision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "\\S"
+        },
+        "summary": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "output": {},
+        "session": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "\\S"
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "activeMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "ask": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ask"
+          },
+          "maxItems": 5
+        }
+      },
+      "required": ["execution", "outcome"],
+      "additionalProperties": false
+    },
+    "workflow-started": {
+      "type": "object",
+      "properties": {
+        "execution": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "session": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "\\S"
+        },
+        "turn": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "\\S"
+        }
+      },
+      "required": ["execution", "session"],
+      "additionalProperties": false
+    },
+    "workflow-advance": {
+      "type": "object",
+      "properties": {
+        "completed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/workflow-completion"
+          }
+        },
+        "started": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/workflow-started"
+          }
+        },
+        "capacity": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "progress": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/workflow-progress"
+          }
+        },
+        "blocked": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/workflow-progress"
+          }
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "workflow-advance-result": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "root": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "state": {
+          "type": "string"
+        },
+        "release": {
+          "type": "boolean"
+        },
+        "cancel": {
+          "type": "boolean"
+        },
+        "executions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/workflow-execution"
+          }
+        }
+      },
+      "required": ["item", "root", "state", "release", "cancel", "executions"],
+      "additionalProperties": false
+    },
+    "workflow-progress": {
+      "type": "object",
+      "properties": {
+        "execution": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "pattern": "\\S"
+        }
+      },
+      "required": ["execution", "summary"],
+      "additionalProperties": false
     }
   }
 }

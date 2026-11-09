@@ -6,7 +6,7 @@ import { mkdtempSync, readdirSync, readFileSync, writeFileSync, rmSync } from "n
 import { tmpdir, cpus } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { observePolls, checkPolls, observe, dispatchLatency, percentile, timed } from "./metrics.ts";
+import { observePolls, checkPolls, observe, dispatchLatency, percentile, timed, waitForPolls } from "./metrics.ts";
 import type { Change } from "../kernel/evolve.ts";
 
 if (process.argv.includes("--server")) {
@@ -127,18 +127,12 @@ if (process.argv.includes("--server")) {
       assert.equal(res.status, 200);
       return res.json();
     };
+    const ask = async (message: string | object = "sample", signal?: AbortSignal) => {
+      const reply = once(child, "message", { signal });
+      child.send(message);
+      return (await reply)[0];
+    };
     const busyHub = async () => {
-      const ask = async (message: object = {}) => {
-        child.send(message);
-        return (await once(child, "message"))[0];
-      };
-      const until = async (done: (figures: any) => boolean) => {
-        for (let tries = 0; tries < 2000; tries++) {
-          if (done(await ask())) return;
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-        assert.fail("长轮询没有到位");
-      };
       const queued = Number(process.env.BENCH_QUEUE ?? 5000);
       const { rulesBytes } = await ask({ padRules: true });
       // The polls go in before the queue: while each heartbeat rescans the queue, a thousand of them would outlast their wait.
@@ -148,16 +142,16 @@ if (process.argv.includes("--server")) {
         waiting.push(observe(request(`/v1/work?wait=50&capacity=0&claim=busy${i}`, "worker", undefined, abort.signal)));
         if (i % 32 === 31) await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      await until((figures) => figures.active === 1000);
+      await waitForPolls((signal) => ask("sample", signal), 1000, 20_000);
       const before = await ask({ queue: queued });
       const heartbeats = await timed(200, 20_000, () => request("/v1/work?wait=0&capacity=0&claim=beat", "worker"));
-      const after = await ask();
+      const after = await ask({});
       assert.ok(after.queued >= queued, "排队必须真的在");
       abort.abort();
       const responses = await Promise.all(waiting);
       assert.ok(responses.every((r) => r.status === "fulfilled" || r.reason.name === "AbortError"));
       checkPolls(after, responses.length);
-      await until((figures) => figures.active === 0);
+      await waitForPolls((signal) => ask("sample", signal), 0, 20_000);
       const event = (i: number) => ({ id: `busy:${i}`, type: "feedback.new", subject: `#busy${i}` });
       const ingest = await timed(20, 20_000, (i) => request("/v1/events", "source", event(i)));
       const [claim, finish]: number[][] = [[], []];
@@ -207,26 +201,22 @@ if (process.argv.includes("--server")) {
         const { job, ms } = await dispatchLatency(
           request,
           async () => {
-            for (;;) {
-              child.send("sample");
-              const [sample] = await once(child, "message");
-              if (sample.active === 1) break;
-              await new Promise((resolve) => setTimeout(resolve, 1));
-            }
+            await waitForPolls((signal) => ask("sample", signal), 1, 5000);
           },
           i,
         );
         latency.push(ms);
         await request(`/v1/runs/${job.run}/result`, job.token, { outcome: "done" });
       }
+      const pollsAt = performance.now();
       const polls = [];
       for (let i = 0; i < 1000; i++) {
         polls.push(observe(request(`/v1/work?wait=5&capacity=0&claim=p${i}`, "worker")));
         if (i % 32 === 31) await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      child.send("sample");
-      const [loaded] = await once(child, "message");
+      // Capture the first complete load, before these same five-second requests can expire.
+      const loaded = await waitForPolls((signal) => ask("sample", signal), 1000, 5000 - (performance.now() - pollsAt));
+      const pollsReadyMs = performance.now() - pollsAt;
       const responses = (await Promise.all(polls)).map((result) => {
         if (result.status === "rejected") throw result.reason;
         return result.value;
@@ -256,6 +246,7 @@ if (process.argv.includes("--server")) {
         durableEventsPerSecond,
         eventToClaimP99Ms: latency.sort((a, b) => a - b)[98],
         concurrentPolls: loaded.active,
+        pollsReadyMs,
         completedPolls: responses.length,
         connectionsAtPeak: loaded.connections,
         busy,

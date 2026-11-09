@@ -32,7 +32,12 @@ export async function run(repo: string, context: any, testLocalHealth = false) {
       throw error;
     }
   } finally {
-    rmSync(folder, { recursive: true, force: true });
+    try {
+      rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      // Cleanup must not replace the delivery error or cause completed business to run again.
+      console.error(`临时目录未清理：${folder}（${(error as Error).message}）`);
+    }
   }
 }
 

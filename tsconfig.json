@@ -22,6 +22,7 @@
     "kernel",
     "protocol",
     "sim",
-    "examples/recipes"
+    "examples/recipes",
+    "examples/workflows"
   ]
 }

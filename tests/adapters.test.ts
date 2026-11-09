@@ -60,7 +60,7 @@ const stubbed = (adapter: Adapter, t: object) => {
 };
 
 test("a built-in agent starts the program its rules name, with its own arguments after it", () => {
-  for (const adapter of [claude, codex, dsh]) {
+  for (const adapter of [claude, dsh]) {
     const argv = adapter.command({ ...turn, program: "/opt/bin/via-gateway" });
     assert.equal(argv[0], "/opt/bin/via-gateway");
     assert.ok(argv.includes("做这件事") || argv.some((part) => part.includes("做这件事")), "the prompt still goes in");
@@ -260,35 +260,29 @@ test("Claude Code: a receipt it wrote isn't lost when a background task calls it
   }
 });
 
-test("Codex: access, new and going on", { skip: !stubbed(codex, {}) }, () => {
-  const argv = stubbed(codex, {})!;
-  assert.deepEqual(argv.slice(1, 4), ["exec", "--json", "--skip-git-repo-check"]);
-  assert.ok(argv.at(-1)!.endsWith("做这件事"));
-  assert.ok(argv.includes('sandbox_mode="workspace-write"'));
-  assert.ok(argv.includes('approval_policy="never"'));
-  assert.ok(stubbed(codex, { access: "read" })!.includes('sandbox_mode="read-only"'));
-  assert.ok(stubbed(codex, { access: "full" })!.includes('sandbox_mode="danger-full-access"'));
-  const again = stubbed(codex, { resume: "thread-1", model: "m", effort: "xhigh" })!;
-  assert.deepEqual(again.slice(1, 3), ["exec", "resume"]);
-  assert.equal(again.at(-2), "thread-1");
-  assert.equal(again.at(-1), argv.at(-1));
-  assert.ok(has(again, "-m", "m"));
-  assert.ok(again.includes('model_reasoning_effort="xhigh"'));
-});
-
-test("Codex: new and resumed runs use only browser access configured for the background task", () => {
-  for (const resume of [null, "thread-1"]) {
-    const prompt = codex.command({ ...turn, resume }).at(-1)!;
-    assert.match(prompt, /后台 codex exec/);
-    assert.match(prompt, /本轮实际可用的浏览器工具/);
-    assert.match(prompt, /规则或 Skill.*浏览器入口/);
-    assert.match(prompt, /桌面应用.*浏览器连接/);
-    assert.match(prompt, /业务.*回执.*本轮/);
-    assert.ok(prompt.endsWith(turn.prompt));
-    assert.doesNotMatch(prompt, /~\/\.local\/bin\/|\/Users\//);
+test("Codex launches only app-server and keeps its provider in the local CLI configuration", () => {
+  for (const access of ["read", "edit", "full"] as const) {
+    assert.deepEqual(codex.command({ ...turn, access, contextFile: "", program: "/opt/bin/via-gateway" }), [
+      "/opt/bin/via-gateway",
+      "app-server",
+      "--listen",
+      "stdio://",
+    ]);
   }
+  assert.equal(typeof codex.open, "function");
 });
 
+test("Codex uses only browser access configured for the background task", async () => {
+  const { backgroundPrompt } = await import("../plugins/codex/server.ts");
+  const prompt = backgroundPrompt(turn.prompt);
+  assert.match(prompt, /后台 codex app-server/);
+  assert.match(prompt, /本轮实际可用的浏览器工具/);
+  assert.match(prompt, /规则或 Skill.*浏览器入口/);
+  assert.match(prompt, /桌面应用.*浏览器连接/);
+  assert.match(prompt, /业务.*回执.*本轮/);
+  assert.ok(prompt.endsWith(turn.prompt));
+  assert.doesNotMatch(prompt, /~\/\.local\/bin\/|\/Users\//);
+});
 test("Codex: only a finished turn's last message is its answer", () => {
   const lines = (...events: object[]) => events.map((e) => JSON.stringify(e)).join("\n");
   const started = { type: "thread.started", thread_id: "t" };

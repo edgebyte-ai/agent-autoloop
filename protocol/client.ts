@@ -1,5 +1,7 @@
 // A hub, from the outside: how a worker, a channel or the command line reaches it. Nothing here is more than an HTTP
 // request, which is the whole of what it takes to plug into the hub.
+import type { WorkflowAdvance, WorkflowAdvanceResult } from "./workflow.ts";
+
 export class HubError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -38,6 +40,8 @@ export function hubClient(url: string, key: string) {
     started: (run: number, token: string, body: { session?: string; link?: string }) =>
       call("POST", `/v1/runs/${run}/started`, { token, body }),
     result: (run: number, token: string, body: unknown) => call("POST", `/v1/runs/${run}/result`, { token, body }),
+    workflowAdvance: (run: number, token: string, body: WorkflowAdvance): Promise<WorkflowAdvanceResult> =>
+      call("POST", `/v1/runs/${run}/workflow`, { token, body }),
     // The channel's door.
     nextCard: (wait: number) => call("GET", `/v1/cards/next?wait=${wait}`, { timeout: wait + 30 }),
     delivered: (card: number, version: number, ref: string | null) =>
@@ -53,6 +57,10 @@ export function hubClient(url: string, key: string) {
     removeKey: (kind: string, name: string) =>
       call("DELETE", `/v1/keys/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`),
     state: (before?: number) => call("GET", before === undefined ? "/v1/state" : `/v1/state?before=${before}`),
+    workflows: () => call("GET", "/v1/workflows"),
+    workflow: (id: number) => call("GET", `/v1/workflows/${id}`),
+    workflowControl: (id: number, action: "pause" | "resume" | "cancel", body: { reason?: string } = {}) =>
+      call("POST", `/v1/workflows/${id}/${action}`, { body }),
     cancel: (run: number) => call("POST", `/v1/runs/${run}/cancel`, { body: {} }),
     resolve: (card: number, reason: string) => call("POST", `/v1/cards/${card}/resolve`, { body: { reason } }),
     // Rule control: facts in the log, rules.json stays as the owner wrote it.

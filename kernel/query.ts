@@ -3,6 +3,7 @@ import { credential, type Environment } from "./credentials.ts";
 import { rows, type Fact, type Row, type View } from "./evolve.ts";
 import { ruleOf, type Rule, type Rules } from "./rules.ts";
 import type { Job } from "../protocol/job.ts";
+import { NotFound } from "./errors.ts";
 
 export function configuration(view: View, version?: number): Rules {
   const current = view.get("config", "rules");
@@ -14,7 +15,8 @@ export function pauseOf(view: View, rule: Rule, now: number): Row | null {
   return row && (row.until === null || Date.parse(row.until) > now) ? row : null;
 }
 
-export const workerOf = (view: View, run: Row) => configuration(view, run.rules_version).agents[run.agent]?.worker;
+export const workerOf = (view: View, run: Row) =>
+  run.worker ?? configuration(view, run.rules_version).agents[run.agent]?.worker;
 export function agentsOf(view: View, worker: string) {
   const agents = Object.entries(configuration(view).agents);
   return agents.filter(([, agent]) => agent.worker === worker).map(([id]) => id);
@@ -123,7 +125,9 @@ export function cardView(card: Row, env: Environment, ref: string | null = null,
 
 export function jobOf(view: View, run: Row, env: Environment): Job {
   const rules = configuration(view, run.rules_version);
-  const { name, cwd, skill, prompt, emits } = ruleOf(rules, run.rule)!;
+  const item = run.workflow ? view.get("workflows", run.workflow) : undefined;
+  const root = item && view.get("workflows", item.root)!;
+  const { name, cwd, skill, prompt, emits } = root?.frozenRule ?? ruleOf(rules, run.rule)!;
   const events = eventsOf(view, run.id);
   const eventIds = events.map((event) => event.id);
   const thread = { rule: run.rule, lane: run.lane };
@@ -139,8 +143,9 @@ export function jobOf(view: View, run: Row, env: Environment): Job {
     run: run.id,
     token: credential(env, "run", run.id, run.issued),
     attempt: run.attempts + 1,
-    rule: { name, cwd, skill, prompt, emits },
-    agent: { ...rules.agents[run.agent], id: run.agent },
+    rule: { name, cwd: item?.cwd ?? cwd, skill, prompt, emits },
+    agent: { ...(root?.frozenAgents ?? rules.agents)[run.agent], id: run.agent },
+    ...(item && { workflow: { item: item.id, root: item.root } }),
     session: run.session ?? run.resume,
     askFirst: rules.askFirst,
     context: {
@@ -190,3 +195,21 @@ export function unrouted(view: View, limit = 20) {
 }
 
 export const safeFact = (fact: Fact) => ({ ...fact, changes: fact.changes.filter(({ table }) => table !== "keys") });
+
+export function workflowList(view: View) {
+  return rows(view, "workflows", { parent: null }, undefined, true).map((row) => {
+    const { frozenDefinitions, frozenAgents, frozenRule, ...summary } = row;
+    return summary;
+  });
+}
+
+export function workflowTree(view: View, id: number) {
+  const item = view.get("workflows", id);
+  if (!item) throw new NotFound("没有这个工作项");
+  return {
+    root: view.get("workflows", item.root),
+    item,
+    items: rows(view, "workflows", { root: item.root }),
+    executions: rows(view, "workflow_steps", { root: item.root }),
+  };
+}

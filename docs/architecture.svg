@@ -72,18 +72,18 @@ text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK S
 <!-- 中：Autoloop 内核 -->
 <rect class="core" x="250" y="68" width="460" height="316" rx="22"/>
 <text x="272" y="103" class="ct">Autoloop 内核</text>
-<text x="688" y="101" class="cs" text-anchor="end">约 1650 行 · 零依赖 · 确定性</text>
+<text x="688" y="101" class="cs" text-anchor="end">零依赖 · 确定性</text>
 
 <!-- 内核核心职责 -->
 <rect class="duty" x="268" y="116" width="424" height="52" rx="10"/>
 <text x="480" y="139" class="cn" text-anchor="middle">按你的规则分派任务</text>
-<text x="480" y="158" class="cd" text-anchor="middle">决定交给哪个 Agent、去哪个目录干 · 同一件事自动合并</text>
+<text x="480" y="158" class="cd" text-anchor="middle">派发工作项 · 记录步骤、依赖与预算 · 同一件事自动合并</text>
 
 <!-- 4 个内核机制标签 -->
 <rect class="chip" x="268" y="180" width="424" height="40" rx="9"/>
 <rect class="tag" x="276" y="187" width="92" height="26" rx="6"/>
-<text x="322" y="204.5" class="tn" text-anchor="middle">挂起零消耗</text>
-<text x="378" y="204.5" class="td">等你拍板时进程直接退出，不烧 Token，回来接着原对话</text>
+<text x="322" y="204.5" class="tn" text-anchor="middle">一轮不等人</text>
+<text x="378" y="204.5" class="td">等待释放名额，不请求模型；共享进程可常驻</text>
 
 <rect class="chip" x="268" y="228" width="424" height="40" rx="9"/>
 <rect class="tag" x="276" y="235" width="92" height="26" rx="6"/>
@@ -118,7 +118,7 @@ text{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK S
 <rect class="item" x="778" y="142" width="146" height="36" rx="8"/>
 <text x="851" y="165" class="r" text-anchor="middle">Claude Code</text>
 <rect class="item" x="778" y="188" width="146" height="36" rx="8"/>
-<text x="851" y="211" class="r" text-anchor="middle">Codex</text>
+<text x="851" y="211" class="r" text-anchor="middle">Codex app-server</text>
 <rect class="item" x="778" y="234" width="146" height="36" rx="8"/>
 <text x="851" y="257" class="r" text-anchor="middle">DeepSeek Harness</text>
 <rect class="item" x="778" y="280" width="146" height="36" rx="8"/>

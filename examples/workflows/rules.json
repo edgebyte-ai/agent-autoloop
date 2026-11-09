@@ -1,0 +1,254 @@
+{
+  "sources": { "workflow-demo": { "name": "工作流示例" } },
+  "agents": {
+    "author": { "name": "执行者", "worker": "my-computer", "use": "codex", "access": "edit" },
+    "reviewer": { "name": "审查者", "worker": "my-computer", "use": "codex", "access": "read" },
+    "commands": { "name": "本机命令", "worker": "my-computer", "use": "command", "command": ["node", "--version"] }
+  },
+  "channels": {},
+  "rules": [
+    {
+      "name": "单人文档",
+      "when": { "source": "workflow-demo", "types": ["single.start"] },
+      "to": "author",
+      "cwd": "~/.agent-autoloop/workflows/{item}",
+      "workflow": "single",
+      "prompt": "写一份简短的中文待办清单使用说明，保存为 document.md。"
+    },
+    {
+      "name": "双人审查文档",
+      "when": { "source": "workflow-demo", "types": ["drdr.start"] },
+      "to": "author",
+      "cwd": "~/.agent-autoloop/workflows/{item}",
+      "workflow": "drdr",
+      "prompt": "写一份中文项目上手说明，分别覆盖安装、使用和退出，保存为 document.md。"
+    },
+    {
+      "name": "递归文档",
+      "when": { "source": "workflow-demo", "types": ["recursive.start"] },
+      "to": "author",
+      "cwd": "~/.agent-autoloop/workflows/{item}",
+      "workflow": "recursive_prdr",
+      "prompt": "把项目上手说明分成安装与日常使用两个独立文档工作项，完成后整合为 document.md。"
+    },
+    {
+      "name": "数据计算",
+      "when": { "source": "workflow-demo", "types": ["data.start"] },
+      "to": "commands",
+      "cwd": "~/.agent-autoloop/workflows/{item}",
+      "workflow": "data",
+      "prompt": "清理标签空白，保留全部记录，计算数量、总和与平均值，核对后导出。"
+    },
+    {
+      "name": "本地代码交付",
+      "when": { "source": "workflow-demo", "types": ["coding.start"] },
+      "to": "author",
+      "cwd": "~/.agent-autoloop/workflows/{item}",
+      "workflow": "coding",
+      "prompt": "在可信配置指定的本地项目中，按事件资料中的需求完成一个小型修改，审查和本机测试通过后创建 PR。"
+    }
+  ],
+  "workflows": {
+    "single": {
+      "cwd": "~/.agent-autoloop/workflows/{item}",
+      "start": "write",
+      "roles": {
+        "author": {
+          "agent": "author",
+          "prompt": "完成资料中的目标与工作范围，只在当前目录写文件。产物是 document.md。需要下一轮继续时输出 decision continue；完成时省略 decision。"
+        }
+      },
+      "budget": { "turns": 5, "activeMs": 900000, "concurrency": 1, "depth": 0, "children": 0 },
+      "steps": {
+        "write": {
+          "kind": "agent",
+          "role": "author",
+          "maxAttempts": 5,
+          "on": { "continue": "write" },
+          "next": "export",
+          "output": ["document.md"]
+        },
+        "export": {
+          "kind": "command",
+          "command": ["node", "{examples}/export.ts", "document.md", "output/document.md"],
+          "output": ["output/document.md"]
+        }
+      }
+    },
+    "drdr": {
+      "cwd": "~/.agent-autoloop/workflows/{item}",
+      "start": "develop",
+      "roles": {
+        "developer": {
+          "agent": "author",
+          "prompt": "完成资料中的文档目标，写 document.md。再次执行时读取两位审查者的全部意见，只修复必须修改的问题。"
+        },
+        "reviewer1": {
+          "agent": "reviewer",
+          "prompt": "独立检查 document.md 的内容是否准确、是否完成目标。不要改文件。给出 decision pass 或 revise，output.findings 是文字列表，通过时为空列表。"
+        },
+        "reviewer2": {
+          "agent": "reviewer",
+          "prompt": "独立检查 document.md 的步骤是否可执行、是否有遗漏。不要改文件。给出 decision pass 或 revise，output.findings 是文字列表，通过时为空列表。"
+        }
+      },
+      "budget": { "turns": 9, "activeMs": 1800000, "concurrency": 2, "depth": 0, "children": 0 },
+      "steps": {
+        "develop": {
+          "kind": "agent",
+          "role": "developer",
+          "maxAttempts": 3,
+          "next": ["review1", "review2"],
+          "output": ["document.md"]
+        },
+        "review1": {
+          "kind": "agent",
+          "role": "reviewer1",
+          "maxAttempts": 3,
+          "on": { "pass": "assess", "revise": "assess" }
+        },
+        "review2": {
+          "kind": "agent",
+          "role": "reviewer2",
+          "maxAttempts": 3,
+          "on": { "pass": "assess", "revise": "assess" }
+        },
+        "assess": {
+          "kind": "command",
+          "after": ["review1", "review2"],
+          "command": ["node", "{examples}/assess.ts", "review1", "review2"],
+          "maxAttempts": 3,
+          "on": { "pass": "export", "revise": "develop" }
+        },
+        "export": {
+          "kind": "command",
+          "command": ["node", "{examples}/export.ts", "document.md", "output/document.md"],
+          "output": ["output/document.md"]
+        }
+      }
+    },
+    "recursive_prdr": {
+      "cwd": "~/.agent-autoloop/workflows/{item}",
+      "start": "plan",
+      "roles": {
+        "planner": {
+          "agent": "author",
+          "prompt": "为资料中的目标划分有界子工作项，给出 output.children 列表，每项包含 id、template、goal、input，可用 after 指定前置子项。template 只用 single、drdr 或 recursive_prdr；优先 single，确需继续拆分才递归。input 写清范围、输入和验收条件。不要生成目录、命令或权限。再规划时说明变更原因。"
+        },
+        "planreviewer": {
+          "agent": "reviewer",
+          "prompt": "独立审查计划范围、依赖和验收条件是否完整且互不重叠。给 decision pass 或 revise，并用 output.findings 列出原因。不要修改计划。"
+        },
+        "integrator": {
+          "agent": "author",
+          "prompt": "读取所有必需子项的结果和产物，整合成当前目录 document.md，并核对根目标。只有发现必须重新拆分的问题时给 decision replan，并在 output 说明原因；否则省略 decision。"
+        }
+      },
+      "budget": { "turns": 60, "activeMs": 3600000, "concurrency": 3, "depth": 3, "children": 12 },
+      "steps": {
+        "plan": { "kind": "agent", "role": "planner", "maxAttempts": 3, "next": "planreview" },
+        "planreview": {
+          "kind": "agent",
+          "role": "planreviewer",
+          "maxAttempts": 3,
+          "on": { "pass": "children", "revise": "plan" }
+        },
+        "children": {
+          "kind": "workflow",
+          "planFrom": "plan",
+          "templates": ["single", "drdr", "recursive_prdr"],
+          "maxAttempts": 3,
+          "next": "integrate"
+        },
+        "integrate": {
+          "kind": "agent",
+          "role": "integrator",
+          "maxAttempts": 3,
+          "on": { "replan": "plan" },
+          "next": "export",
+          "output": ["document.md"]
+        },
+        "export": {
+          "kind": "command",
+          "command": ["node", "{examples}/export.ts", "document.md", "output/document.md"],
+          "output": ["output/document.md"]
+        }
+      }
+    },
+    "data": {
+      "to": "commands",
+      "start": "seed",
+      "roles": {},
+      "budget": { "turns": 1, "activeMs": 60000, "concurrency": 1, "depth": 0, "children": 0 },
+      "steps": {
+        "seed": {
+          "kind": "command",
+          "command": ["node", "{examples}/data.ts", "seed", "{examples}/input.json"],
+          "next": "clean"
+        },
+        "clean": { "kind": "command", "command": ["node", "{examples}/data.ts", "clean"], "next": "calculate" },
+        "calculate": { "kind": "command", "command": ["node", "{examples}/data.ts", "calculate"], "next": "check" },
+        "check": { "kind": "command", "command": ["node", "{examples}/data.ts", "check"], "next": "export" },
+        "export": { "kind": "command", "command": ["node", "{examples}/data.ts", "export"], "output": ["result.json"] }
+      }
+    },
+    "coding": {
+      "start": "prepare",
+      "roles": {
+        "developer": {
+          "agent": "author",
+          "prompt": "在本工作项的独立工作树完成目标。读取上轮审查和本机测试结果后修复。不要推送、创建 PR、合并或关闭 Issue。将修改说明和验证方法写入 workflow-result.md，作为 PR 正文。"
+        },
+        "reviewer1": {
+          "agent": "reviewer",
+          "prompt": "独立审查本工作树的功能、调用者和测试是否正确。不要改文件。给 decision pass 或 revise，output.findings 是必须修改的问题文字列表，通过时为空列表。"
+        },
+        "reviewer2": {
+          "agent": "reviewer",
+          "prompt": "独立审查本工作树的权限边界、数据处理和失败恢复。不要改文件。给 decision pass 或 revise，output.findings 是必须修改的问题文字列表，通过时为空列表。"
+        }
+      },
+      "budget": { "turns": 12, "activeMs": 3600000, "concurrency": 2, "depth": 0, "children": 0 },
+      "steps": {
+        "prepare": {
+          "kind": "command",
+          "command": ["node", "{examples}/repository.ts", "prepare", "{repository}"],
+          "next": "develop"
+        },
+        "develop": { "kind": "agent", "role": "developer", "maxAttempts": 4, "next": ["review1", "review2"] },
+        "review1": {
+          "kind": "agent",
+          "role": "reviewer1",
+          "maxAttempts": 4,
+          "on": { "pass": "assess", "revise": "assess" }
+        },
+        "review2": {
+          "kind": "agent",
+          "role": "reviewer2",
+          "maxAttempts": 4,
+          "on": { "pass": "assess", "revise": "assess" }
+        },
+        "assess": {
+          "kind": "command",
+          "after": ["review1", "review2"],
+          "command": ["node", "{examples}/assess.ts", "review1", "review2"],
+          "maxAttempts": 4,
+          "on": { "pass": "test", "revise": "develop" }
+        },
+        "test": {
+          "kind": "command",
+          "command": ["npm", "test"],
+          "maxAttempts": 4,
+          "on": { "failed": "develop" },
+          "next": "commit"
+        },
+        "commit": { "kind": "command", "command": ["node", "{examples}/repository.ts", "commit"], "next": "publish" },
+        "publish": {
+          "kind": "command",
+          "command": ["node", "{examples}/publish.ts", "{publisher}", "{context}.publish.json"],
+          "reconcile": ["node", "{examples}/publish.ts", "{publisher}", "{context}.publish.json", "--reconcile"]
+        }
+      }
+    }
+  }
+}

@@ -6,7 +6,7 @@ import path from "node:path";
 import { loadChannel } from "./channels.ts";
 import { cantListen, parseListen, readConfig, type ChannelConfig } from "./config.ts";
 import { HOME } from "./home.ts";
-import { runningUp } from "./service.ts";
+import { clearUpIdentity, recordUpIdentity, runningUp } from "./service.ts";
 import { commitOf } from "./version.ts";
 import { hubClient } from "../protocol/client.ts";
 import { createWorker } from "../worker/worker.ts";
@@ -20,9 +20,11 @@ function lock() {
   if (running !== null && running !== process.pid) throw new Error(`已经在跑了（进程 ${running}）`);
   const file = path.join(HOME, "up.pid");
   writeFileSync(file, String(process.pid));
+  recordUpIdentity(process.pid);
   return () => {
     try {
       unlinkSync(file);
+      clearUpIdentity();
     } catch {}
   };
 }
@@ -72,6 +74,7 @@ export async function up() {
   for (const output of [process.stdout, process.stderr]) output.on("error", () => process.exit(1));
   const stop = new AbortController();
   const jobs: Promise<unknown>[] = [];
+  const connections: (() => Promise<void>)[] = [];
   let close = () => {};
   if (config.hub) {
     loadSecrets();
@@ -97,16 +100,27 @@ export async function up() {
     const { key, name, capacity, unreachable } = config.worker;
     const say = log("worker");
     const worker = createWorker({ hub: hubClient(config.url, key), name, capacity, unreachable, log: say });
+    connections.push(worker.close);
     jobs.push(keepRunning(say, () => worker.run(stop.signal), stop.signal));
   }
   for (const [id, channel] of Object.entries(config.channels ?? {})) {
     jobs.push(keepChannelRunning(id, channel, config.url, stop.signal));
   }
-  const finish = () => {
+  let stopping = false;
+  const finish = async () => {
+    if (stopping) return;
+    stopping = true;
     stop.abort();
-    close();
-    unlock();
-    process.exit(0);
+    try {
+      // A resident connection owns live turns; let it persist their final or uncertain state before exiting.
+      await Promise.all(connections.map((stopConnection) => stopConnection()));
+      close();
+      unlock();
+      process.exit(0);
+    } catch (error) {
+      stray(`couldn't finish stopping: ${error}`);
+      stopping = false;
+    }
   };
   process.on("SIGTERM", finish);
   process.on("SIGINT", finish);

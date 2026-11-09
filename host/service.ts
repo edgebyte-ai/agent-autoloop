@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { HOME } from "./home.ts";
 import { stablePath } from "./node-path.ts";
-import { powershell, processCommandSync, psQuote } from "./command.ts";
+import { POWERSHELL, powershell, processCommandSync, psQuote, windowsJobName } from "./command.ts";
 
 const PROGRAM = path.join(import.meta.dirname, "..", "bin", "agent-autoloop.ts");
 /** Another install on this machine (another AGENT_AUTOLOOP_HOME) has a service of its own. */
@@ -25,15 +25,33 @@ const task = () => `Get-ScheduledTask | Where-Object { $_.TaskName -eq ${psQuote
 /** What the login task starts. Started straight from it, node gets a console window on the desktop, and the task doesn't
  * start it again when it exits. wscript has no console: background.js starts the hub hidden and again when it stops. */
 export function windowsLauncher() {
+  // Task Scheduler expands %NAME% even in quoted paths; only the encoded script carries install paths through it.
+  const words = [
+    path.join(import.meta.dirname, "service.ps1"),
+    HOME,
+    process.execPath,
+    windowsJobName(path.join(HOME, "service-job")),
+  ];
+  const script = `& ${words.map(psQuote).join(" ")}; exit $LASTEXITCODE`;
   return {
-    program: path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "wscript.exe"),
-    args: ["//B", "//Nologo", "//E:JScript"]
-      .concat(
-        [LAUNCHER, process.execPath, "--disable-warning=ExperimentalWarning", BACKGROUND, HOME].map(windowsArgument),
-      )
-      .join(" "),
-    directory: HOME,
+    program: POWERSHELL,
+    args: `-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`,
+    directory: path.dirname(POWERSHELL),
   };
+}
+
+function ownedWindowsTask() {
+  const current = windowsLauncher();
+  const previous = ["//B", "//Nologo", "//E:JScript"]
+    .concat(
+      [LAUNCHER, process.execPath, "--disable-warning=ExperimentalWarning", BACKGROUND, HOME].map(windowsArgument),
+    )
+    .join(" ");
+  const wscript = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "wscript.exe");
+  return `$task = ${task()}; $owned = [bool]($task -and @($task.Actions).Count -eq 1 -and (
+    ($task.Actions.Execute -eq ${psQuote(current.program)} -and $task.Actions.Arguments -eq ${psQuote(current.args)}) -or
+    ($task.Actions.Execute -eq ${psQuote(wscript)} -and $task.Actions.Arguments -eq ${psQuote(previous)})
+  ))`;
 }
 
 /** PowerShell that puts a shortcut starting the same thing in `folder` (a PowerShell expression). */
@@ -196,8 +214,7 @@ export function installService() {
 
 export function removeService() {
   if (process.platform === "win32") {
-    const removed =
-      powershell(`$task = ${task()}; if ($task -and $task.Actions.Arguments.Contains(${psQuote(windowsArgument(BACKGROUND))})) {
+    const removed = powershell(`${ownedWindowsTask()}; if ($owned) {
       $task | Stop-ScheduledTask
       $task | Unregister-ScheduledTask -Confirm:$false
       'removed'
@@ -223,15 +240,51 @@ export function removeService() {
   }
 }
 
+type UpIdentity = { pid: number; created: string; command: string; executable: string };
+const identityFile = () => path.join(HOME, "up-process.json");
+function windowsProcess(pid: number): UpIdentity | null {
+  const value = powershell(`$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'; if ($p) {
+    @{ pid = ${pid}; created = $p.CreationDate.ToFileTimeUtc().ToString(); command = $p.CommandLine; executable = $p.ExecutablePath } | ConvertTo-Json -Compress
+  }`);
+  return value ? JSON.parse(value) : null;
+}
+
+/** The numeric pid file stays readable by older commands; creation time identifies the native Windows process. */
+export function recordUpIdentity(pid: number) {
+  if (process.platform !== "win32") return;
+  const identity = windowsProcess(pid);
+  if (!identity) throw new Error("无法核对中台进程身份");
+  writeFileSync(identityFile(), JSON.stringify(identity), { mode: 0o600 });
+}
+
+export function clearUpIdentity() {
+  if (process.platform === "win32") rmSync(identityFile(), { force: true });
+}
+
 /** The process that left its number in up.pid, if it still is that process: the number may be someone else's by now. */
 export function runningUp() {
   const file = path.join(HOME, "up.pid");
   if (!existsSync(file)) return null;
   const pid = readFileSync(file, "utf8").trim();
+  if (!/^\d+$/.test(pid)) return null;
   let command = "";
   try {
-    command = processCommandSync(Number(pid));
-  } catch {}
+    if (process.platform === "win32" && existsSync(identityFile())) {
+      const recorded: UpIdentity = JSON.parse(readFileSync(identityFile(), "utf8"));
+      const current = windowsProcess(Number(pid));
+      if (
+        !current ||
+        recorded.pid !== current.pid ||
+        recorded.created !== current.created ||
+        recorded.command !== current.command ||
+        recorded.executable !== current.executable
+      )
+        return null;
+      command = current.command;
+    } else command = processCommandSync(Number(pid));
+  } catch (error) {
+    if (process.platform === "win32") throw new Error("无法核对中台进程身份，不能确认它已停止", { cause: error });
+  }
   return /agent-autoloop(\.ts)?"? up\b/.test(command) ? Number(pid) : null;
 }
 
@@ -243,12 +296,28 @@ export function stopUp() {
     process.kill(pid, "SIGTERM");
   } catch {}
   for (let tries = 0; tries < 50 && runningUp() !== null; tries++) pause(100);
+  if (runningUp() !== null) throw new Error("停止中台后尚未确认进程退出");
+}
+
+/** The owned supervisor restarts the hub independently of whether the next login may start that supervisor. */
+export function windowsServiceStatus(): {
+  registered: boolean;
+  managerRunning: boolean;
+  hubPid: number | null;
+  restartConfigured: boolean;
+} {
+  const status = JSON.parse(
+    powershell(`
+    ${ownedWindowsTask()}
+    @{ registered = $owned; managerRunning = [bool]($owned -and $task.State -eq 'Running'); restartConfigured = $owned } | ConvertTo-Json -Compress
+  `),
+  );
+  return { ...status, hubPid: runningUp() };
 }
 
 /** The service this program installs and can restart. */
 export function serviceRunning() {
-  if (process.platform === "win32")
-    return powershell(`$task = ${task()}; [string]($task -and $task.State -eq 'Running')`) === "True";
+  if (process.platform === "win32") return windowsServiceStatus().managerRunning;
   if (process.platform === "darwin") return existsSync(plistFile()) && launchdHasIt();
   return spawnSync("systemctl", ["--user", "is-active", "--quiet", label()], { stdio: "ignore" }).status === 0;
 }

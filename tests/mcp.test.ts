@@ -15,7 +15,7 @@ import { setup } from "./helpers.ts";
 const home = setup("mcp");
 
 /** The MCP server for real, against a stand-in hub, past its handshake. */
-async function connect(hub: RequestListener) {
+async function connect(hub: RequestListener, owner = true) {
   const server = createServer(hub);
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -23,7 +23,7 @@ async function connect(hub: RequestListener) {
     join(home, "config.json"),
     JSON.stringify({
       url: `http://127.0.0.1:${(server.address() as any).port}`,
-      owner: "owner-key",
+      ...(owner && { owner: "owner-key" }),
       source: { name: "app", key: "source-key" },
     }),
   );
@@ -173,6 +173,49 @@ test("a slow tool call holds up neither a ping nor another call, and is still an
     assert.equal(mcp.child.exitCode, 0);
   } finally {
     release();
+    await mcp.close();
+  }
+});
+
+test("workflow MCP tools keep item controls on the owner door and pass the recorded result through", async () => {
+  const calls: any[] = [];
+  const mcp = await connect(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    calls.push([req.url, req.headers.authorization, body && JSON.parse(body)]);
+    res.end(JSON.stringify({ state: "running", cancel: true }));
+  });
+  try {
+    mcp.send({ id: 2, method: "tools/list" });
+    const tools = (await mcp.answered(2)).result.tools;
+    assert.equal(tools.find((tool: any) => tool.name === "workflow_show").annotations.readOnlyHint, true);
+    mcp.send({
+      id: 3,
+      method: "tools/call",
+      params: { name: "workflow_cancel", arguments: { item: 8, reason: "停止" } },
+    });
+    assert.deepEqual(JSON.parse((await mcp.answered(3)).result.content[0].text), { state: "running", cancel: true });
+    assert.deepEqual(calls, [["/v1/workflows/8/cancel", "Bearer owner-key", { reason: "停止" }]]);
+    mcp.send({ id: 4, method: "tools/call", params: { name: "workflow_pause", arguments: { item: 0 } } });
+    assert.equal((await mcp.answered(4)).error.code, -32602);
+    assert.equal(calls.length, 1);
+  } finally {
+    await mcp.close();
+  }
+});
+
+test("a source-only MCP connection cannot see or control workflows", async () => {
+  const mcp = await connect((_req, res) => res.end("{}"), false);
+  try {
+    mcp.send({ id: 2, method: "tools/list" });
+    const tools = (await mcp.answered(2)).result.tools;
+    assert.deepEqual(
+      tools.map((tool: any) => tool.name),
+      ["emit", "tell"],
+    );
+    mcp.send({ id: 3, method: "tools/call", params: { name: "workflow_show", arguments: { item: 8 } } });
+    assert.equal((await mcp.answered(3)).error.code, -32602);
+  } finally {
     await mcp.close();
   }
 });

@@ -4,7 +4,7 @@
 
 [中文](README.md) | **English**
 
-[Get started](#get-started) · [Recipes](#ready-to-use-recipes) · [Plugins](#plugin-ecosystem-swap-any-of-the-four-sides) · [Kernel](#four-kernel-mechanisms) · [Docs](#documentation)
+[Get started](#get-started) · [Workflows](#multi-step-workflows) · [Recipes](#ready-to-use-recipes) · [Plugins](#plugin-ecosystem-swap-any-of-the-four-sides) · [Kernel](#four-kernel-mechanisms) · [Docs](#documentation)
 
 ![Architecture](docs/architecture.en.svg)
 
@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/KKKKhazix/agent-autoloop/main/insta
 
 The installer and `agent-autoloop update` both install the newest [release](https://github.com/KKKKhazix/agent-autoloop/releases), which has passed every check.
 
-Then run a real loop with your own agent — ask, exit while it waits, make the call, resume:
+Then run a real loop with your own agent: ask, finish the round while it waits, answer, and resume:
 
 ```bash
 agent-autoloop try
@@ -44,12 +44,12 @@ agent-autoloop try
 
 > CLI output and default notification strings are still Chinese until they are translated. Sample CLI output in this README is that same text written in English.
 
-Here is the output from Codex in a non-interactive terminal, written in English:
+The terminal shows a question card, for example:
 
 ```text
 Event sent. The agent is getting to work...
 
-The agent finished this round and asked you a question. No process is running for it now, and it is not spending tokens.
+The agent finished this round and asked you a question. No new model execution starts while it waits.
 
 [Your call] #1 Try run: pick a color
 This is a try run. Either choice is fine.
@@ -67,8 +67,8 @@ The numbers match the diagram above:
 
 1. **An event comes in.** A 9:00 AM schedule, a new GitHub issue, or a production alert becomes a standard event sent to the kernel.
 2. **Dispatched by your rules.** Your rules decide which agent handles it and in which folder. New events for the same subject while it is queued merge into one round.
-3. **Work one round and exit.** The agent puts its result in its final message, and the process exits.
-4. **Asks only when needed.** For sensitive actions like deleting data, restarting a service, spending money, or messaging people, the kernel sends you a card through Feishu or a desktop notification. While you take your time, no agent process runs and no tokens are spent.
+3. **Report the result and finish the round.** The agent puts its result in its final message. Ordinary commands exit; Codex ends the Turn while the worker retains its shared app-server.
+4. **Asks only when needed.** For sensitive actions like deleting data, restarting a service, spending money, or messaging people, the kernel sends you a card through Feishu or a desktop notification. Waiting releases the execution slot and starts no new model execution. The shared app-server can remain running.
 5. **One tap resumes it.** Your answer picks up the original conversation and finishes the job.
 
 Anything the agent can handle alone takes the auto-loop at the top of the diagram: finish outright, or schedule a follow-up check (say, in 30 minutes) without bothering you.
@@ -127,6 +127,28 @@ Order checked. We have enough stock in the warehouse.
 
 Besides `ask`, receipts can send notifications (`notice`), resolve open cards (`resolve`), schedule follow-up checks (`later`), and emit new events (`events`). A notice asks for nothing, but you can add a line of your own when you settle one, and it stays on the card; one marked `fyi` is only there to tell you, and has no button. If the JSON is invalid, the hub has the agent rewrite just that final message in the same session, without repeating completed work. If rewriting also fails, it keeps the original conclusion and tells you the receipt was not applied (a plain command has no session, so it goes straight to this). Going on in an old session works the same way: a new session starts only when the old one can't be continued. If it was continued and then broke partway, the run counts as failed and is retried in that session a few minutes later, not redone in a new one. A new event on the same thread starts a new session by default; with `"resume": true` in the rule it goes on in the last round's session.
 
+Codex recovery first checks the original thread, turn, and saved result. An uncertain request remains blocked instead of silently starting a new session. Workflow receipt errors preserve the work already done; every new model Turn requires another hub admission and budget reservation.
+
+## Multi-step workflows
+
+For independent review, repair loops, local commands, or child work items, explicitly add `workflow` to a rule and reference a definition in `rules.json` under `workflows`. Existing ordinary rules need no changes. The hub uses its existing queue, fact log, and cards to record steps, dependencies, role sessions, and cumulative budgets. One worker runs all steps within a work item.
+
+The [workflow examples](examples/workflows/README.md) include `single`, `drdr` with two reviewers, `recursive_prdr` with plan review and children, and coding, document, and data flows. They use one executor. Each running workflow retains its recorded definition; configuration changes apply to new workflows.
+
+After following an example to set your folders and worker:
+
+```bash
+agent-autoloop check
+agent-autoloop workflow start <rule-name>
+agent-autoloop workflow list
+agent-autoloop workflow show <item-id> --json
+agent-autoloop workflow pause <item-id>
+agent-autoloop workflow resume <item-id>
+agent-autoloop workflow cancel <item-id>
+```
+
+`show` reports parent and child items, steps, attempts, role threads, results, and waiting reasons. Pause prevents new step admission; admitted steps finish at a pause point. Cancellation waits for execution to stop. Waiting for a person or children releases the execution slot and starts no new model request. See the [workflow guide](docs/workflows.md) for configuration, budgets, and recovery.
+
 ## Ready-to-use recipes
 
 Each recipe includes rules, a task Skill, and setup instructions (written in Chinese).
@@ -159,7 +181,9 @@ Built-in plugins ship with the program and are enabled through configuration. Us
 | **Channels**: how cards reach you | [Desktop notifications](plugins/desktop/channel.ts) (on by default), [Feishu](plugins/feishu/channel.ts), [DingTalk / WeCom / Slack / Discord](plugins/webhook/templates.ts) | [Guide](skills/agent-autoloop/SKILL.md#接一个通道) |
 | **Delivery**: CI/CD as a plugin | [`delivery`](plugins/delivery/delivery.ts) | [Guide](skills/agent-autoloop/SKILL.md#交付流水线) |
 
-**What has been tested:** Claude Code, Codex, and ACP (with the official Codex ACP adapter) have run multi-turn Q&A and session resumption across processes. Feishu has run real delivery, button callbacks, and card updates. The four webhook templates have only been checked against local mock servers, and the GitLab webhook against the payloads in its docs, not a real GitLab. These text channels answer through a link, so `hub.publicUrl` must be reachable from your phone or computer.
+**Existing live checks:** Claude Code and ACP (with the official Codex ACP adapter) have run multi-turn Q&A and session resumption across processes. Feishu has run real delivery, button callbacks, and card updates. The four webhook templates have only been checked against local mock servers, and the GitLab webhook against the payloads in its docs, not a real GitLab. These text channels answer through a link, so `hub.publicUrl` must be reachable from your phone or computer.
+
+**Persistent Codex connection.** `use: "codex"` runs the installed `codex app-server` and keeps the CLI's provider configuration. It does not modify user configuration. The worker starts one shared process on demand. Work items and roles use separate threads; repairs and reviews continue their original threads. Waiting starts no new model execution. Idle threads unload after 120 minutes by default and resume when needed; set the agent's `threadIdleMinutes` to change this interval. Process and thread reuse do not guarantee model cache hits.
 
 **Built-in agents through another service.** To send Claude Code or Codex to a third-party model service, or to set environment variables before it starts, write a small script that sets them and starts the program, then put `"program": "/path/to/script"` on the agent. Session resumption and usage reporting still work. See the [guide](skills/agent-autoloop/SKILL.md#接一个-agent).
 
@@ -182,9 +206,9 @@ Agents that speak ACP connect with `use: "acp"` and can go on in the same sessio
 
 ## Four kernel mechanisms
 
-The kernel is about 1,850 lines with zero runtime dependencies. It reads no clock, uses no randomness, and makes no outbound requests; plugins connect in, and credentials stay with the plugins that use them. Identical inputs always give identical results. It brings four proven systems patterns to command-line agents:
+The kernel has zero runtime dependencies. It reads no clock, uses no randomness, and makes no outbound requests; plugins connect in, and credentials stay with the plugins that use them. Identical inputs always give identical results. It brings four proven systems patterns to command-line agents:
 
-- **Zero-cost wait**: The process exits while waiting for your call, and the waiting state lives in SQLite, so the agent does not stay alive. If you reply three days later, no agent process runs and no tokens are spent in the meantime — only the lightweight hub waits in the background; your answer resumes the original conversation.
+- **A round never waits for a person**: Waiting state lives in the fact log. Waiting for an answer or children ends the current execution round, releases its slot, and starts no new model request. The shared Codex app-server can remain running. Your answer resumes the work item in its original role thread.
 - **Event sourcing**: All state is derived from an append-only fact log, committed in the same SQLite transaction as its indexes before the hub replies. Confirmed facts survive `SIGKILL` (whole-machine power loss is not separately tested), every run can be traced with a single command, and format changes rebuild from the log without migration scripts.
 - **Code / data split**: Like parameterized SQL. Issue titles, bodies, and other external text are written only to a local data file, never into the prompt, which carries only character-checked types, IDs, and links; `rules.json` alone decides which agent runs, in which folder, and with what access. Events carrying `cwd`, `agent`, or `access` fields are rejected outright.
 - **Hop circuit breaker**: Like packet TTL in networking. Events returned by an agent can dispatch more agents, and the hop count keeps growing — across human questions and scheduled follow-ups too — and an agent cannot reset it. Past 8 hops, the kernel records the event, stops dispatching, and sends you a notice card.
@@ -212,7 +236,7 @@ Round 1 · Demo
 
 ### Benchmarks
 
-Apple M5 Pro, 24 GB, Node 24.21.0. Each write is a separate request, acknowledged only after its transaction is durable.
+These measurements predate persistent connections and workflows: Apple M5 Pro, 24 GB, Node 24.21.0. Each write is a separate request, acknowledged only after its transaction is durable. They exclude app-server memory and model calls.
 
 | Metric | Measured |
 |---|---:|
@@ -238,6 +262,7 @@ For automated workloads, providers generally recommend using API keys rather tha
 
 - [Installation guide](INSTALL.md)
 - [Configuration & delivery pipeline manual](skills/agent-autoloop/SKILL.md)
+- [Workflow configuration, observation, and control](docs/workflows.md)
 - [Writing plugins](docs/plugins.md)
 - [Full HTTP protocol specification](docs/protocol.md)
 - [Security boundaries](SECURITY.md)
@@ -256,6 +281,7 @@ For automated workloads, providers generally recommend using API keys rather tha
 | `cli/`, `bin/` | User commands and entry point: status, answers, `why`, MCP, updates, and uninstall |
 | `plugins/` | Built-in agent, event, channel, and delivery plugins |
 | `examples/recipes/` | Complete recipes with rules, a task Skill, and setup instructions |
+| `examples/workflows/` | Steps, independent review, child items, and coding / non-coding examples |
 | `examples/plugins/`, `examples/skills/`, `examples/*.sh` | Minimal plugin templates, standalone task guides, and Shell examples |
 | `skills/agent-autoloop/` | The hub's configuration and operation manual, also made available to agents during installation |
 | `docs/` | Protocol, plugin guide, and Chinese / English architecture diagrams |

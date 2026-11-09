@@ -17,6 +17,12 @@ const specs = [
   ],
   ["resolve", "将卡片结案，写明已核实的结果", { card: positive, reason: string }, ["card", "reason"]],
   ["stop", "停止一轮", { run: positive }, ["run"]],
+  ["workflow_list", "查看根工作流和累计用量", {}, []],
+  ["workflow_show", "查看工作项、子项、角色会话和各次执行结果", { item: positive }, ["item"]],
+  ["workflow_start", "按已有规则启动工作流", { rule: string, subject: string, reason: string }, ["rule"]],
+  ["workflow_pause", "暂停工作项和子项的新步骤；已准入步骤收尾", { item: positive, reason: string }, ["item"]],
+  ["workflow_resume", "恢复工作项和子项，继续未完成位置", { item: positive, reason: string }, ["item"]],
+  ["workflow_cancel", "请求取消工作项和子项；实际退出后才算取消完成", { item: positive, reason: string }, ["item"]],
   [
     "emit",
     "用本机来源发送事件；相同编号只记一次",
@@ -35,7 +41,10 @@ function toolsFor(config: ReturnType<typeof readConfig>) {
       name,
       description,
       inputSchema: { type: "object", properties, required, additionalProperties: false },
-      annotations: { readOnlyHint: ["status", "why"].includes(name), destructiveHint: name === "stop" },
+      annotations: {
+        readOnlyHint: ["status", "why", "workflow_list", "workflow_show"].includes(name),
+        destructiveHint: ["stop", "workflow_cancel"].includes(name),
+      },
     }));
 }
 type Tool = ReturnType<typeof toolsFor>[number];
@@ -68,6 +77,18 @@ function callTool(hub: Hub, name: Tool["name"], args: any) {
       return hub.resolve(args.card, args.reason);
     case "stop":
       return hub.cancel(args.run);
+    case "workflow_list":
+      return hub.workflows();
+    case "workflow_show":
+      return hub.workflow(args.item);
+    case "workflow_start":
+      return hub.run(args.rule, { subject: args.subject, reason: args.reason });
+    case "workflow_pause":
+    case "workflow_resume":
+    case "workflow_cancel":
+      return hub.workflowControl(args.item, name.slice("workflow_".length) as "pause" | "resume" | "cancel", {
+        reason: args.reason,
+      });
     case "emit":
       return hub.event(args);
     case "tell":

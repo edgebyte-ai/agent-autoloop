@@ -14,12 +14,14 @@ export const TABLES = [
   "config",
   "due",
   "pauses",
+  "workflows",
+  "workflow_steps",
 ] as const;
 export type Table = (typeof TABLES)[number];
 export type Change = { table: Table; key: string; row: Row | null };
 export type Fact = { version: 1; seq: number; at: number; type: string; changes: Change[]; meta?: Row };
 export type Match = Record<string, SQLInputValue | SQLInputValue[] | { not: null }>;
-const NUMBERED = new Set<Table>(["events", "runs", "cards", "timers"]);
+const NUMBERED = new Set<Table>(["events", "runs", "cards", "timers", "workflows", "workflow_steps"]);
 const indexes: Partial<Record<Table, string[][]>> = {
   events: [["source", "key"], ["routed", "id"], ["paused", "id"], ["id"]],
   runs: [["state", "id"], ["rule", "lane", "state", "id"], ["id"], ["finished_at"]],
@@ -33,6 +35,7 @@ const indexes: Partial<Record<Table, string[][]>> = {
     ["run_id"],
     ["id"],
     ["fyi", "created_at"],
+    ["workflow", "execution", "state"],
   ],
   timers: [
     ["event_id", "id"],
@@ -41,6 +44,12 @@ const indexes: Partial<Record<Table, string[][]>> = {
   ],
   deliveries: [["channel"], ["card_id"]],
   due: [["at"]],
+  workflows: [["root", "id"], ["parent", "id"], ["run"], ["state", "id"], ["worker", "cwd", "state", "id"]],
+  workflow_steps: [
+    ["root", "state", "id"],
+    ["item", "state", "id"],
+    ["item", "step", "id"],
+  ],
 };
 const field = (name: string) => `json_extract(data,'$.${name}')`;
 const statements = new WeakMap<DatabaseSync, Map<string, StatementSync>>();
@@ -215,7 +224,7 @@ export function evolve(view: View, facts: Iterable<Fact>, db = view.db, reset = 
       if (typeof change.row?.id === "number") next[change.table] = Math.max(next[change.table] ?? 0, change.row.id);
     }
     for (const { table, key, row } of pending.values()) {
-      if (["events", "runs", "cards"].includes(table))
+      if (["events", "runs", "cards", "workflows", "workflow_steps"].includes(table))
         statement(db, "INSERT OR IGNORE INTO projection_refs VALUES (?,?,?)").run(table, key, fact.seq);
       if (row === null) remove.run(table, key);
       else {

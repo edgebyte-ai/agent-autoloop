@@ -1,0 +1,8 @@
+{
+  "repo": "YOUR_ACCOUNT/YOUR_REPOSITORY",
+  "remote": "origin",
+  "branch": "codex/work-{item}",
+  "base": "main",
+  "title": "完成已审查的工作项",
+  "bodyFile": "workflow-result.md"
+}

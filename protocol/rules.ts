@@ -3,6 +3,7 @@
 // message saying where: at start it stops the hub, later it leaves the old rules running and the owner is told.
 import { nextRun, parseCron } from "../kernel/cron.ts";
 import { SCHEDULE, type Rule, type Rules } from "../kernel/rules.ts";
+import { checkWorkflows } from "./workflow.ts";
 
 export class RulesError extends Error {
   readonly issues: string[];
@@ -83,6 +84,12 @@ function checkRule(issues: string[], rules: Rules, rule: Rule, names: Set<string
     ["tell", (value) => TELLS.includes(value as string), `只能是 ${TELLS.join("、")}`, true],
     ["emits", isObject, "要是一个对象", true],
     ["channels", isSomeWords, "要是通道编号的列表", true],
+    [
+      "workflow",
+      (value) => typeof value === "string" && Object.hasOwn(rules.workflows ?? {}, value),
+      `不是已定义的工作流：${isObject(rule) ? rule.workflow : ""}`,
+      true,
+    ],
   ]);
   if (isObject(when) && "source" in when) {
     checkFields(issues, `${where}的 when `, when, [
@@ -96,8 +103,15 @@ function checkRule(issues: string[], rules: Rules, rule: Rule, names: Set<string
     checkFields(issues, `${where}的 when `, when, [["cron", isCron, "不是有效的 cron"]]);
   }
   if (!isObject(rule)) return;
+  if (rule.workflow) {
+    const definition = rules.workflows?.[rule.workflow];
+    const owner = definition?.to ?? Object.values(definition?.roles ?? {}).find((role) => isObject(role))?.agent;
+    if (owner && rules.agents[rule.to]?.worker !== rules.agents[owner]?.worker) {
+      issues.push(`${where}的 to 要与工作流角色使用同一个 worker`);
+    }
+  }
   // A plain command needs no words: a script that polls something is an agent too.
-  if (!rule.skill && !rule.prompt && rules.agents[rule.to]?.use !== "command") {
+  if (!rule.skill && !rule.prompt && !rule.workflow && rules.agents[rule.to]?.use !== "command") {
     issues.push(`${where}的 skill 和 prompt 至少写一个`);
   }
   if (isObject(rule.emits)) {
@@ -130,6 +144,7 @@ export function parseRules(json: string, now: number, timezone: string): Rules {
     ["channels", isObject, "要是一个对象", true],
     ["rules", Array.isArray, "要是一个列表"],
     ["elsewhere", Array.isArray, "要是一个列表", true],
+    ["workflows", isObject, "要是一个对象", true],
   ]);
   if (issues.length) throw new RulesError(issues);
   const rules = parsed as Rules;
@@ -166,10 +181,12 @@ export function parseRules(json: string, now: number, timezone: string): Rules {
       ["command", isSomeWords, "要是命令行的列表", !isObject(agent) || agent.use !== "command"],
       ["program", isText, "要是一个程序的路径", true],
       ["timeout", isCount, "要是正整数（分钟）", true],
+      ["threadIdleMinutes", isCount, "要是正整数（分钟）", true],
     ]);
     if (isObject(agent)) agent.access ??= "edit";
   }
   const names = new Set<string>();
+  if (rules.workflows) issues.push(...checkWorkflows(rules.workflows, rules.agents));
   for (const rule of rules.rules) checkRule(issues, rules, rule, names, now);
   if (issues.length) throw new RulesError(issues);
   const limits = new Map<string, number | undefined>();

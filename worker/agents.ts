@@ -13,6 +13,8 @@ export type { Usage } from "../protocol/validate.ts";
 export type Access = "read" | "edit" | "full";
 /** One launch of an agent. `resume` is the session to go on in, if any; otherwise `session` is a new id it may use. */
 export type Turn = {
+  /** Stable local operation id; reused when recovering an uncertain request. */
+  id?: string;
   prompt: string;
   session: string;
   resume: string | null;
@@ -25,10 +27,13 @@ export type Turn = {
   program?: string;
   contextFile: string;
   folder: string;
+  environment?: NodeJS.ProcessEnv;
+  threadIdleMinutes?: number;
 };
 export type Reading = {
   text?: string;
   session?: string;
+  turn?: string;
   /** What this launch used. */
   usage?: Usage;
   /** What the session has used so far, for amounts the program only gives that way. */
@@ -38,8 +43,22 @@ export type Reading = {
   finished?: boolean;
   /** It has this turn's prompt, in a conversation that's there. From here on the work may be half done. */
   started?: boolean;
+  /** The operation may have happened; keep it held until its actual state can be read. */
+  blocked?: boolean;
+  progress?: string;
+  /** Actual elapsed turn time when the runtime reports it, including recovered turns. */
+  activeMs?: number;
 };
+export type Checkpoint = Record<string, unknown> & { reading?: Reading };
+export type Resident = {
+  start(turn: Turn, checkpoint: Checkpoint | undefined, persist: (checkpoint: Checkpoint) => void): Promise<Reading>;
+  interrupt(checkpoint: Checkpoint): Promise<void>;
+  close(): Promise<void>;
+};
+export type ResidentOptions = { log: (line: string) => void; environment: NodeJS.ProcessEnv; folder: string };
 export type Adapter = {
+  /** One connection per worker, shared by its turns. A saved checkpoint means recover, never blindly repeat. */
+  open?(options: ResidentOptions): Resident | Promise<Resident>;
   /** Its command line for this turn. */
   command(turn: Turn): string[];
   /** What its output says so far. `code` is null while it's still running or when it died without saying. */

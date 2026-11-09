@@ -11,7 +11,7 @@ description: 配置 Agent 自动化中台：加规则、接新的事件插件、
 
 `agent-autoloop status` 列出谁在线、等用户什么、在做什么、做过什么，还有按完成时间统计的今天和最近 7 天的轮数、Token 和费用（同一轮重试的已报用量相加，没上报的轮数会写出来）。终端里它带颜色，接管道、被 Agent 调用或设了 `NO_COLOR` 时是纯文本。`agent-autoloop status --json` 输出 `/v1/state` 的原样结构，给脚本和看板用。`agent-autoloop answer <卡片> <序号>` 回答，`agent-autoloop resolve <卡片> <结果>` 结案，`agent-autoloop stop <第几轮>` 停掉一轮，等整个进程组退出才报告已停。
 
-续接会话也只算这次新增的用量。`~/.agent-autoloop/worker/usage/` 存着相减要用的累计值，没有记录的续接（比如删了这个目录）这次不报 Codex 的 Token 和 Claude Code 的费用，下一次恢复正常。本人打开链接在同一个会话里接着聊用掉的量，会算进下一次续接。旧回执不重算。
+续接会话也只算这次新增的用量。`~/.agent-autoloop/worker/usage/` 存着相减要用的累计值，没有记录的续接不报 Codex 的 Token、Claude Code 的费用等累计项目，下一次恢复正常。Codex app-server 使用会话 `tokenUsage.total` 做差，不能把仅含最后一次模型请求的 `last` 当作完整 Turn。本人在外部使用同一个会话时，累计统计可能把那段用量算进下一次续接。费用不可得时保持未知，旧回执不重算。
 
 这里没有网页。用户想要一个页面看全局，就替他写一个：读 `GET /v1/state`，密钥是 `config.json` 的 `owner`，要跟着变化就从状态里的 `seq` 接 `GET /v1/stream?after=<seq>`，请求见 `docs/protocol.md` 的「本人」一节。
 
@@ -35,6 +35,28 @@ description: 配置 Agent 自动化中台：加规则、接新的事件插件、
 - 用户在别的地方定时跑的任务（Claude、Codex 应用里），写进 `elsewhere`，只在 `agent-autoloop status` 里列出来；它们要找用户时运行 `agent-autoloop tell <编号> --task <任务名>`，内容从标准输入传。要用户拍板的，给这个任务写上 `cwd` 和 `skill` 或 `prompt`，任务里运行 `agent-autoloop ask --task <任务名>`，标准输入传回执那样的 `ask`：卡片带选项，用户点了，中台叫醒它的 Agent 在 `cwd` 照 `skill`、`prompt` 接着做，回答在这一轮资料文件的 `answers` 里。
 
 现成场景和内置插件从 [README](../../README.md#拿来即用的场景模板)进入，开发示例见[写插件](../../docs/plugins.md)。用户想接自动化时先从例子改，不要从零写：`examples/recipes/` 里有早报（`morning-brief`）、处理 GitHub issue（`github-issues`）、线上报错（`ops-alerts`）、反馈处理（`feedback`）、网站巡检（`website-watch`）、飞书周报与业务摘要（`feishu-brief`）和 Claude 浏览器交接（`browser-handoff`），每个都有规则、Skill 和写明权限原因的 README。反馈、巡检、飞书摘要和浏览器交接默认飞书本人私聊；按模板说明替换虚构标识，业务资料留在私有目录，读取用本人身份，通知用机器人身份。要写新的 Agent、通道或事件插件，看教程 `docs/plugins.md` 和最小例子 `examples/plugins/`。
+
+## 配置工作流
+
+工作流显式启用：在 `rules.json.workflows` 保存定义，在规则上写 `"workflow": "模板名"`。普通规则不改。先读[工作流说明](../../docs/workflows.md)，从[完整示例](../../examples/workflows/README.md)选择 `single`、双 Reviewer 的 `drdr`、`recursive_prdr`、数据流程或本地 coding 流程。
+
+同一工作项的角色使用同一 worker、独立 thread。Developer 修复、Reviewer 复审和 Planner 改计划各回原 thread。子项才进入原有调度队列，父项等待时保存位置、释放名额；子项完成后父项回原 worker 集成。
+
+```text
+agent-autoloop workflow start <规则名>
+agent-autoloop workflow list
+agent-autoloop workflow show <工作项编号>
+agent-autoloop workflow show <工作项编号> --json
+agent-autoloop workflow pause <工作项编号> --reason "核对内容"
+agent-autoloop workflow resume <工作项编号>
+agent-autoloop workflow cancel <工作项编号> --reason "目标已撤回"
+```
+
+控制根项作用于整棵树，控制子项只作用于该子树。暂停阻止新的步骤准入，已准入步骤在步骤边界收尾。取消命令只是请求，用 `show` 确认实际执行已经退出。人工等待使用原有卡片；回答仅续办提问的步骤，不授权其他动作。心跳不是实际进展，单步完成不是整个目标完成。
+
+每个模板必须写根预算：`turns`、`activeMs`、`concurrency`、`depth`、`children`。步骤的 `maxAttempts` 限制修复和重试，默认 1。子项和重试都计入同一根预算。运行中的工作流使用已经保存的定义；修改规则文件不会改变它的角色、步骤和权限。
+
+命令和子项模板只能来自可信配置。模型计划只选允许的模板并填写范围、输入和依赖。有外部副作用的命令配置 `reconcile`：执行状态未知或命令失败退出时先核对一次。超时、非零退出码或响应丢失不等于没执行，核对不清时保留阻塞；核对时间计入原执行的剩余额度。coding 发布模板只用于已授权仓库，文档与数据模板不要求 Git。
 
 ## 写处理手册
 
@@ -60,11 +82,13 @@ description: 配置 Agent 自动化中台：加规则、接新的事件插件、
 "hermes": { "name": "Hermes", "worker": "my-mac", "use": "command", "command": ["hermes", "chat", "-Q", "-q", "{prompt}"] }
 ```
 
-退出码不是 0 算没跑成。要会话接续、打开会话的链接和用量统计，在 `~/.agent-autoloop/plugins/<名字>/agent.ts` 写一个插件（照 `plugins/codex/agent.ts`）：`command` 给命令行，`read` 从输出读最后一条消息和会话，Agent 收下提示词后带上 `started: true`（否则干到一半断了会开新会话重做），`link` 给链接。
+退出码不是 0 算没跑成。要会话接续、打开会话的链接和用量统计，在 `~/.agent-autoloop/plugins/<名字>/agent.ts` 写一个插件（照 `examples/plugins/hello-agent/agent.ts`）：`command` 给命令行，`read` 从输出读最后一条消息和会话，Agent 收下提示词后带上 `started: true`（否则干到一半断了会开新会话重做），`link` 给链接。需要共享连接的插件可提供 `open` 生命周期接口，见[常驻 Agent](../../docs/plugins.md#常驻-agent)。
 
 `access` 默认 `edit`，专用插件翻译成对应 CLI 的权限；`command` 只传参数，不替任意程序限制权限，按该 CLI 文档配置。要完整权限、不审批的话写 `full`，先和用户说清楚。
 
-内置的 Claude Code、Codex、DeepSeek Harness 要走第三方网关、代理，或者启动前要先设好环境变量：写一个小脚本，设好变量再 `exec claude "$@"`（Codex、DSH 照此换成 `codex`、`dsh`），Agent 里写 `"program": "脚本的绝对路径"`。插件照旧解析输出、续接会话、统计用量，只是启动的是这个脚本；不用改成 `use: "command"`。令牌放在脚本读的文件里，不写进 `rules.json`。接单程序启动 Agent 前会去掉继承来的 `CLAUDE_CODE_*` 变量，要用的写在脚本里。`agent-autoloop doctor` 也用这个脚本检查登录。脚本能读到 `AGENT_AUTOLOOP_RUN`（第几轮）和 `AGENT_AUTOLOOP_CONTEXT`（资料文件），比如按轮次准备工作目录再 `cd` 进去。
+内置的 Claude Code、Codex、DeepSeek Harness 要走第三方网关、代理，或者启动前要先设好环境变量：写一个小脚本，设好变量再 `exec claude "$@"`（Codex、DSH 照此换成 `codex`、`dsh`），Agent 里写 `"program": "脚本的绝对路径"`。不用改成 `use: "command"`。令牌放在脚本读的文件里，不写进 `rules.json`。接单程序启动 Agent 前会去掉继承来的 `CLAUDE_CODE_*` 变量，要用的写在脚本里。`agent-autoloop doctor` 也用这个脚本检查登录。一次性插件的脚本能读到 `AGENT_AUTOLOOP_RUN`（第几轮）和 `AGENT_AUTOLOOP_CONTEXT`（资料文件）；Codex 的包装程序只启动共享 app-server，不能按这些变量决定某一轮的目录或上下文。
+
+Codex 保持 `use: "codex"`，执行方式为 worker 持有的常驻 app-server，没有 `exec` 后端选择或回退。CLI 的 provider 配置保持不变。`model`、`effort`、`access` 和 `cwd` 按可信配置传入每轮；同一 worker 只能使用一个 Codex `program`。等待人工回答时结束 Turn，不发新模型请求，但共享 app-server 可以驻留。Agent 配置的 `threadIdleMinutes` 默认 120 分钟，空闲到期后卸载 thread，需要时再 resume。进程复用不代表缓存一定命中。
 
 ```json
 "deepseek": { "name": "Claude Code（DeepSeek）", "worker": "my-mac", "use": "claude", "program": "/Users/me/.agent-autoloop/bin/claude-deepseek.sh" }
@@ -184,6 +208,8 @@ MCP 客户端的启动程序填 `node`，参数为本机引擎绝对路径 `bin/
 
 MCP 服务不区分调用方，都按本人记录（`answer` 记成本人，`emit` 不带层数）。不要把它配进接单程序启动的 CLI 的用户级配置，否则一轮能自己回答自己的卡片。
 
+工作流工具为 `workflow_list`、`workflow_show`、`workflow_start`、`workflow_pause`、`workflow_resume` 和 `workflow_cancel`，只向已有本人身份开放。`workflow_start` 按规则名启动，查询与控制按工作项编号调用。取消返回的是请求；用 `workflow_show` 核对实际执行是否结束。
+
 `agent-autoloop key remove <source|worker|channel|owner> <名字>` 立即收回对应密钥，长轮询和日志订阅也立即失效；已经领到的活仍可用这一轮的独立 token 交结果。
 
 ## 放到服务器、加电脑
@@ -199,7 +225,7 @@ MCP 服务不区分调用方，都按本人记录（`answer` 记成本人，`emi
 
 ## 日志与恢复
 
-Windows 用任务计划程序在本人登录后启动；通过 SSH 管理时仍用这个登录任务运行 Codex，避免它在 OpenSSH 会话中的沙箱启动限制（见 `INSTALL.md`）；`service install`、`service remove`、`update` 同样适用，更新会重启中台。Windows 自带的 Administrator 账号用「启动」文件夹代替登录任务，`service install` 会打印做法。安装见 `INSTALL.md`。
+Windows 用任务计划程序在本人登录后启动；通过 SSH 管理时仍用这个登录任务运行 Codex，避免它在 OpenSSH 会话中的沙箱启动限制（见 `INSTALL.md`）；`service install`、`service remove`、`update` 同样适用，更新会重启中台。Windows 自带的 Administrator 账号用「启动」文件夹代替登录任务，`service install` 会打印做法。`doctor` 分别列出启动项注册、监管程序运行、中台 PID 和故障重启配置；注册成功不等于中台已经运行。安装见 `INSTALL.md`。
 
 日志：Windows 在 `%USERPROFILE%\.agent-autoloop\logs\up.log`，macOS 在 `~/.agent-autoloop/logs/up.log`，Linux 运行 `journalctl --user -u agent-autoloop`。
 

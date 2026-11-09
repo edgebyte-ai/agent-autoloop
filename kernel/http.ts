@@ -13,6 +13,7 @@ export type Services = {
   commit: string;
   dispatch(type: string, args: any[], now: number): any;
   state(now: number, before?: number): unknown;
+  workflows(id?: number): unknown;
   why(id: number): unknown;
   card(token: string): Row | undefined;
   wait(until: number, signal: AbortSignal): Promise<void>;
@@ -232,6 +233,17 @@ async function control(call: Call, encoded: string, action: string) {
   return json(action === "resume" ? act(call, type, name) : act(call, type, name, holder, given));
 }
 
+async function workflowControl(call: Call, id: number, action: string) {
+  const holder = requireKey(call, "owner");
+  const given = await readJson(call.request);
+  if (!given || typeof given !== "object" || Array.isArray(given)) throw new InputError("要是一个 JSON 对象");
+  if (Object.keys(given).some((field) => field !== "reason")) throw new InputError("只可填写 reason");
+  if (given.reason !== undefined && (typeof given.reason !== "string" || given.reason.length > 1000)) {
+    throw new InputError("reason 要是 1000 字以内的文字");
+  }
+  return json(act(call, "workflowControl", id, action, holder, given));
+}
+
 function state(call: Call) {
   requireKey(call, "owner");
   const before = call.url.searchParams.get("before");
@@ -281,7 +293,7 @@ async function route(call: Call): Promise<Response> {
   }
   if (method === "POST" && path === "/v1/tell") return tell(call);
   if (method === "GET" && path === "/v1/work") return work(call);
-  const [, runPart, action] = /^\/v1\/runs\/([1-9][0-9]*)\/(started|result|cancel|why)$/.exec(path) ?? [];
+  const [, runPart, action] = /^\/v1\/runs\/([1-9][0-9]*)\/(started|result|cancel|why|workflow)$/.exec(path) ?? [];
   const runId = Number(runPart);
   if (method === "GET" && action === "why") {
     requireKey(call, "owner");
@@ -293,11 +305,26 @@ async function route(call: Call): Promise<Response> {
     return json({ ok: true });
   }
   if (method === "POST" && action === "result") return json(act(call, "finish", runId, token, await readJson(request)));
+  if (method === "POST" && action === "workflow") {
+    return json(act(call, "workflowAdvance", runId, token, await readJson(request)));
+  }
   if (method === "GET" && path === "/v1/cards/next") return nextCard(call);
   const card = /^\/v1\/cards\/([1-9][0-9]*)\/(delivered|failed|answer|resolve)$/.exec(path);
   if (method === "POST" && card) return cardAction(call, Number(card[1]), card[2]);
   const ruleControl = /^\/v1\/rules\/([^/]+)\/(pause|resume|run)$/.exec(path);
   if (method === "POST" && ruleControl) return control(call, ruleControl[1], ruleControl[2]);
+  if (method === "GET" && path === "/v1/workflows") {
+    requireKey(call, "owner");
+    return json(services.workflows());
+  }
+  const workflow = /^\/v1\/workflows\/([1-9][0-9]*)(?:\/(pause|resume|cancel))?$/.exec(path);
+  if (workflow && method === "GET" && !workflow[2]) {
+    requireKey(call, "owner");
+    return json(services.workflows(Number(workflow[1])));
+  }
+  if (workflow && method === "POST" && workflow[2]) {
+    return workflowControl(call, Number(workflow[1]), workflow[2]);
+  }
   if (method === "GET" && path === "/v1/state") return state(call);
   if (method === "GET" && path === "/v1/stream") return stream(call);
   return json({ error: "没有这个地址" }, 404);

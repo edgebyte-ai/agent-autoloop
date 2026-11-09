@@ -1,7 +1,8 @@
 // Node cannot exec a Windows npm .cmd shim. Run what it points at (a JavaScript entry or a native program) directly so
 // multiline arguments never become cmd source.
-import { execFile, execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -96,4 +97,118 @@ export function processCommandSync(pid: number) {
 /** Without stopping the process while it looks: the worker shares one with the hub, and PowerShell takes over a second to start. */
 export async function processCommand(pid: number) {
   return (await execFileAsync(...commandOf(pid), { encoding: "utf8", windowsHide: true })).stdout;
+}
+
+export const windowsJobName = (file: string) =>
+  `Local\\agent-autoloop-${createHash("sha256").update(path.resolve(file).toLowerCase()).digest("hex")}`;
+
+/** A PID can disappear before its descendants. The named job, including its startup receipt, identifies the whole turn. */
+export async function windowsJobState(file: string, terminate = false): Promise<boolean | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      POWERSHELL,
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        path.join(import.meta.dirname, "../worker/windows.ps1"),
+        "-Action",
+        terminate ? "stop" : "inspect",
+        "-JobName",
+        windowsJobName(file),
+      ],
+      { encoding: "utf8", windowsHide: true },
+    );
+    const count = Number(stdout.trim());
+    if (count >= 0 && stdout.trim()) return count > 0;
+    if (count === -1) return existsSync(`${file}.ready`) || existsSync(`${file}.closed`) ? false : null;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function processGroupState(pid: number): Promise<boolean | null> {
+  try {
+    const { stdout } = await execFileAsync("ps", ["-ax", "-o", "pgid=", "-o", "stat="], { encoding: "utf8" });
+    return stdout.split("\n").some((line) => {
+      const [group, state] = line.trim().split(/\s+/);
+      return Number(group) === pid && !state.startsWith("Z");
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function stopProcessGroup(pid: number) {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+  const end = Date.now() + 15_000;
+  while (Date.now() < end) {
+    if ((await processGroupState(pid)) === false) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`无法确认进程组已退出：${pid}`);
+}
+
+/** `record` is unique to this launch and remains available for inspecting its process tree after a crash. */
+export function spawnManaged(argv: string[], options: { cwd: string; env: NodeJS.ProcessEnv; record: string }) {
+  const windows = process.platform === "win32";
+  const { record, cwd, env } = options;
+  writeFileSync(record, JSON.stringify({ argv, cwd, exit: `${record}.exit` }), { mode: 0o600 });
+  const child = spawn(
+    process.execPath,
+    [path.join(import.meta.dirname, "../worker/run.ts"), windows ? "--supervise" : "--managed", record, record],
+    {
+      cwd,
+      env: { ...env, AGENT_AUTOLOOP_NODE: process.execPath },
+      windowsHide: true,
+      detached: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  const exited = new Promise<void>((resolve) => {
+    child.once("close", () => resolve());
+    child.once("error", () => resolve());
+  });
+  let stopped = false;
+  const waitForExit = async () => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        exited,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(`进程监管尚未退出：${record}`)), 15_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  async function stop() {
+    if (stopped) return;
+    const end = Date.now() + 15_000;
+    if (windows) {
+      while (Date.now() < end) {
+        if ((await windowsJobState(record, true)) === false) {
+          await waitForExit();
+          stopped = true;
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      throw new Error(`无法确认进程树已退出：${record}`);
+    }
+    if (child.exitCode === null && child.signalCode === null) child.stdin.end();
+    await waitForExit();
+    if (!existsSync(`${record}.closed`)) throw new Error(`无法确认进程树已退出：${record}`);
+    stopped = true;
+  }
+  return { child, stop, record };
 }
