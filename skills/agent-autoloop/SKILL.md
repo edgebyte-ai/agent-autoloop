@@ -1,11 +1,41 @@
 ---
 name: agent-autoloop
-description: 配置 Agent 自动化中台：加规则、接新的事件插件、接新的 Agent、接新的通道（飞书、QQ、钉钉、企微……）、写处理手册、部署到服务器、多台电脑。用户说“有事的时候让 Agent 自己处理”“每天几点让 Agent 做某事”“接一下 GitHub / 告警 / 某个系统”“换一个模型”“在飞书里批”“加一台电脑”时用。
+description: 安装和操作 Agent Autoloop：从已有程序包部署中台和 worker、局域网连接、新建项目、定制工作流、启动已有项目的 bug 修复或功能开发、查进度、回答和停止任务。也用于配置事件来源、Agent 和通知通道。只在用户要通过本系统开展这些工作时使用。
 ---
 
 # Agent 自动化中台
 
-协议全文在 `docs/protocol.md`，这里是怎么做。程序在 `~/.agent-autoloop/app`，规则在 `~/.agent-autoloop/rules.json`，配置和密钥在 `~/.agent-autoloop/config.json`。
+这是独立的操作 Skill，安装它的机器不需要有 Agent Autoloop 源码，也不需要先安装中台程序。下面的安装、项目与任务操作说明都随 Skill 分发。
+
+## 文件在哪里、在哪台机器操作
+
+- `references/` 相对于本次加载的 `SKILL.md` 所在目录，不相对于当前工作目录。只在 Skill 内查找这些操作手册。
+- 程序、配置和项目路径属于对应的中台或 worker。默认程序目录是目标机器的 `~/.agent-autoloop/app`，数据目录是 `~/.agent-autoloop`；规则是中台数据目录的 `rules.json`，本机身份在各机器自己的 `config.json`。用户指定其他目录时沿用它。
+- 操作机只有 Skill 时，通过用户授权的 SSH 或远程执行入口，在中台运行管理命令，在 worker 运行项目和环境命令。不要为了操作中台，在操作机克隆源码或复制中台管理密钥。缺少远程入口时只问连接信息。
+- 普通安装、新建项目、定制工作流、启动任务、查进度、回答和停止，都不需要读协议全文；接单 Agent 按 worker 提供的当前步骤与回执要求执行，也不需要读全文。
+- 只有直接开发 HTTP 客户端、插件或核对接口字段时，才按需读取匹配运行版本的协议章节。默认位置是中台程序目录下的 `docs/protocol.md`，例如中台上的 `~/.agent-autoloop/app/docs/protocol.md`。这不是操作机当前项目的 `docs/`，也不是本 Skill 的必需文件。
+
+## 按用户的目标开始
+
+用户给了程序包、安装目录、中台地址或项目目录，就沿用这些选择。只补问本次操作缺少的信息；已经授权的安装和任务不反复确认。安装与日常管理使用操作者身份；任务内的 Agent 不持有本人的管理密钥。
+
+| 用户要做什么 | 读取什么、做到哪里 |
+| --- | --- |
+| 安装中台或 worker | 读随 Skill 附带的 [安装说明](references/install.md)，使用用户指定的程序包，不默认下载公开 Release |
+| 新建项目 | 读 [项目操作](references/projects.md)，建立初始仓库、需求和项目专用工作流，再按授权启动 |
+| 定制工作流 | 读下面「配置工作流」和 [项目操作](references/projects.md)，复用现有模板，检查后保存到中台 |
+| 修 bug、增加功能 | 读 [项目操作](references/projects.md)，核对固定项目和基线，用本次需求启动已有规则 |
+| 查进度、回答、暂停、停止 | 用下面的命令查询真实状态并执行；停止请求后核对实际退出 |
+
+当前程序用 Node 24 直接运行 TypeScript，无单独的编译步骤。已经准备好的完整程序包可以直接部署，目标机器不需要克隆源码、安装开发依赖或编译。程序包不能包含原机器的配置、密钥、数据库或 Agent 登录资料。
+
+## 安装与局域网连接
+
+先确定程序包或已有安装目录、中台地址、worker 名称以及运行 Agent 的机器。中台的 `config.json.hub` 启动服务，worker 的 `config.json.worker` 启动接单；两者都用 `up`，可同机或分机运行。项目规则只放中台，项目目录和 Agent 登录留在 worker。
+
+局域网可用 `http://192.168.1.10:3350`，把示例 IP 换成实际地址。中台监听该局域网地址，worker 的 `url` 指向它；仅在访问机器无法连接时检查端口和防火墙。`hub.publicUrl` 是生成卡片链接用的访问地址，可以填同一个局域网 URL，不要求公网或域名。监听 `0.0.0.0` 时，链接地址仍要填实际 IP；不需要链接时可省略 `publicUrl`。HTTP 会明文传输密钥和任务资料，只用于用户信任的网络；跨不可信网络使用 HTTPS 或加密隧道。
+
+配置好真实 Agent 和规则后检查中台和 worker 连通，再按用户授权执行任务；它会使用模型额度。保留安装器试跑规则时可用 `try`，纯中台的空规则配置不能直接试跑。没有通道也能用 `status` 和 `answer` 完成问答。没有执行真实 Agent、浏览器或生产部署时，交付中写清未验证部分。
 
 ## 看情况、回答
 
@@ -13,7 +43,7 @@ description: 配置 Agent 自动化中台：加规则、接新的事件插件、
 
 续接会话也只算这次新增的用量。`~/.agent-autoloop/worker/usage/` 存着相减要用的累计值，没有记录的续接不报 Codex 的 Token、Claude Code 的费用等累计项目，下一次恢复正常。Codex app-server 使用会话 `tokenUsage.total` 做差，不能把仅含最后一次模型请求的 `last` 当作完整 Turn。本人在外部使用同一个会话时，累计统计可能把那段用量算进下一次续接。费用不可得时保持未知，旧回执不重算。
 
-这里没有网页。用户想要一个页面看全局，就替他写一个：读 `GET /v1/state`，密钥是 `config.json` 的 `owner`，要跟着变化就从状态里的 `seq` 接 `GET /v1/stream?after=<seq>`，请求见 `docs/protocol.md` 的「本人」一节。
+这里没有网页。普通进度查询使用 CLI。用户明确要开发页面客户端时，读 `GET /v1/state`，身份是 `config.json` 的 `owner`，从状态的 `seq` 接 `GET /v1/stream?after=<seq>` 订阅变化；此时再按上面的定位说明读取协议的「本人」一节。
 
 ## 改规则
 
@@ -34,11 +64,11 @@ description: 配置 Agent 自动化中台：加规则、接新的事件插件、
 - 默认的先问清单是 `askFirst`，用户说什么事必须先问他，就改这里。
 - 用户在别的地方定时跑的任务（Claude、Codex 应用里），写进 `elsewhere`，只在 `agent-autoloop status` 里列出来；它们要找用户时运行 `agent-autoloop tell <编号> --task <任务名>`，内容从标准输入传。要用户拍板的，给这个任务写上 `cwd` 和 `skill` 或 `prompt`，任务里运行 `agent-autoloop ask --task <任务名>`，标准输入传回执那样的 `ask`：卡片带选项，用户点了，中台叫醒它的 Agent 在 `cwd` 照 `skill`、`prompt` 接着做，回答在这一轮资料文件的 `answers` 里。
 
-现成场景和内置插件从 [README](../../README.md#拿来即用的场景模板)进入，开发示例见[写插件](../../docs/plugins.md)。用户想接自动化时先从例子改，不要从零写：`examples/recipes/` 里有早报（`morning-brief`）、处理 GitHub issue（`github-issues`）、线上报错（`ops-alerts`）、反馈处理（`feedback`）、网站巡检（`website-watch`）、飞书周报与业务摘要（`feishu-brief`）和 Claude 浏览器交接（`browser-handoff`），每个都有规则、Skill 和写明权限原因的 README。反馈、巡检、飞书摘要和浏览器交接默认飞书本人私聊；按模板说明替换虚构标识，业务资料留在私有目录，读取用本人身份，通知用机器人身份。要写新的 Agent、通道或事件插件，看教程 `docs/plugins.md` 和最小例子 `examples/plugins/`。
+需要现成场景时，读取 worker 程序包内的 `examples/recipes/`，不用在操作机寻找源码。模板包含早报（`morning-brief`）、GitHub issue（`github-issues`）、告警（`ops-alerts`）、反馈（`feedback`）、巡检（`website-watch`）、飞书摘要（`feishu-brief`）和浏览器交接（`browser-handoff`）。只读取本次使用的模板及其说明，替换虚构标识；业务资料留在私有目录。反馈、巡检、飞书摘要和浏览器交接默认飞书本人私聊，读取用本人身份，通知用机器人身份。
 
 ## 配置工作流
 
-工作流显式启用：在 `rules.json.workflows` 保存定义，在规则上写 `"workflow": "模板名"`。普通规则不改。先读[工作流说明](../../docs/workflows.md)，从[完整示例](../../examples/workflows/README.md)选择 `single`、双 Reviewer 的 `drdr`、`recursive_prdr`、数据流程或本地 coding 流程。
+工作流显式启用：在 `rules.json.workflows` 保存定义，在规则上写 `"workflow": "模板名"`。普通规则不改。先读随 Skill 附带的 [项目与工作流操作](references/projects.md)。要复用完整定义时，读取 worker 程序包内 `examples/workflows/rules.json`，只取需要的模板；不依赖操作机有仓库或外部文档。
 
 同一工作项的角色使用同一 worker、独立 thread。Developer 修复、Reviewer 复审和 Planner 改计划各回原 thread。子项才进入原有调度队列，父项等待时保存位置、释放名额；子项完成后父项回原 worker 集成。
 
@@ -82,7 +112,7 @@ agent-autoloop workflow cancel <工作项编号> --reason "目标已撤回"
 "hermes": { "name": "Hermes", "worker": "my-mac", "use": "command", "command": ["hermes", "chat", "-Q", "-q", "{prompt}"] }
 ```
 
-退出码不是 0 算没跑成。要会话接续、打开会话的链接和用量统计，在 `~/.agent-autoloop/plugins/<名字>/agent.ts` 写一个插件（照 `examples/plugins/hello-agent/agent.ts`）：`command` 给命令行，`read` 从输出读最后一条消息和会话，Agent 收下提示词后带上 `started: true`（否则干到一半断了会开新会话重做），`link` 给链接。需要共享连接的插件可提供 `open` 生命周期接口，见[常驻 Agent](../../docs/plugins.md#常驻-agent)。
+退出码不是 0 算没跑成。用户明确要开发新插件时，在 worker 数据目录的 `plugins/<名字>/agent.ts` 写插件。`command` 给命令行，`read` 从输出读最后一条消息和会话，Agent 收下提示词后带上 `started: true`（否则干到一半断了会开新会话重做），`link` 给链接。插件示例与 `open` 常驻接口的详细约定属于程序包的开发资料；仅在这类开发任务中，从对应机器的程序目录读取 `examples/plugins/hello-agent/agent.ts` 和 `docs/plugins.md`，不是日常操作的前置要求。
 
 `access` 默认 `edit`，专用插件翻译成对应 CLI 的权限；`command` 只传参数，不替任意程序限制权限，按该 CLI 文档配置。要完整权限、不审批的话写 `full`，先和用户说清楚。
 
@@ -100,13 +130,13 @@ Windows 的 `cwd` 可写 `C:/code/project`、JSON 转义后的 `C:\\code\\projec
 
 一轮最长跑多久写 `timeout`，单位是分钟，默认 180。
 
-ACP 用 `use: "acp"` 和 `command: ["ACP 服务程序"]`，比如 Gemini CLI 是 `["gemini", "--acp"]`、OpenCode 是 `["opencode", "acp"]`，支持 v1 的会话新建、恢复、文字与一次性权限请求；先在该 Agent 自己的 CLI 登录。`access` 只管 Agent 主动来问的操作，规范允许它不询问就执行，要限制得用它自己的模式（比如 `command` 里写 `env INITIAL_AGENT_MODE=read-only …`）；`model`、`effort` 不生效。普通命令接法与实测支持范围见 README。
+ACP 用 `use: "acp"` 和 `command: ["ACP 服务程序"]`，比如 Gemini CLI 是 `["gemini", "--acp"]`、OpenCode 是 `["opencode", "acp"]`，支持 v1 的会话新建、恢复、文字与一次性权限请求；先在该 Agent 自己的 CLI 登录。`access` 只管 Agent 主动来问的操作，规范允许它不询问就执行，要限制得用它自己的模式（比如 `command` 里写 `env INITIAL_AGENT_MODE=read-only …`）；`model`、`effort` 不生效。
 
 DeepSeek Harness 用 `use: "dsh"`，要 0.2.2 或更新（`npm install -g @deepseek-ai/dsh@next --allow-scripts=koffi,node-pty,@deepseek-ai/dsh-subprocess-local`，不放行这三个包的安装脚本，装完一跑就出错），能续接原会话、上报 Token（不报费用），报 `MISSING_CREDENTIAL` 时把密钥放进环境变量，`access` 对应它的权限档位；旧版用 README 里的普通命令接法。没有可打开的桌面链接。
 
 Claude 主任务要委托 Codex 操作网页时，从 `examples/recipes/browser-handoff/` 配置已验收的入口、目标与允许操作，保留返回的 Codex 子会话编号；受阻由主任务交 `ask`，恢复后只续办网页步骤。入口调用模板不提供浏览器连接，也不修改桌面应用或授权。
 
-网页任务使用 Agent 已配置的浏览器工具。需要专用入口时，在规则的 `prompt` 或 `skill` 写明已有命令和会话接续方式，只交网页步骤，业务和回执仍由主任务负责。不能假定后台 CLI 已接通桌面浏览器；用同一后台方式验收页面和接续，见 `docs/plugins.md` 的「浏览器接入」。
+网页任务使用 Agent 已配置的浏览器工具。需要专用入口时，在规则的 `prompt` 或 `skill` 写明已有命令和会话接续方式，只交网页步骤，业务和回执仍由主任务负责。不能假定后台 CLI 已接通桌面浏览器；用同一后台方式验收页面和接续。
 
 ## 接一个通道
 
@@ -127,7 +157,7 @@ Claude 主任务要委托 Codex 操作网页时，从 `examples/recipes/browser-
 
 **只会发文字的（钉钉、企微的群机器人，Slack、Discord 的 Webhook）**：用 `plugins/webhook/channel.ts`，`config.json` 的通道项写 `"use": "webhook"`、`"platform": "dingtalk"` 和 `"url": "已有的 Webhook 地址"`；平台也可选 `wecom`、`slack`、`discord`。别的平台只要收 JSON POST 也能接：不写 `platform`，写 `url` 和带 `{text}` 的 `body`，比如 Telegram 写 `"url": "https://api.telegram.org/bot<机器人令牌>/sendMessage"`、`"body": { "chat_id": "…", "text": "{text}" }`。`rules.json` 里写 `"links": true`，卡片链接本身就能回答；`config.json` 的 `hub.publicUrl` 要配成手机或电脑能打开的地址。
 
-**有按钮的新通道**：在 `~/.agent-autoloop/plugins/<名字>/channel.ts` 写一个，照 `plugins/feishu/channel.ts`：循环领卡片、发或改、报告；收到点击转给 `hub.answer`。协议在 `docs/protocol.md`，用别的语言写也行，只要会发 HTTP。
+**有按钮的新通道**：这是插件开发任务，才需要按上面的定位说明读取协议。插件放在运行通道的机器的数据目录 `plugins/<名字>/channel.ts`；从该机器程序包的 `plugins/feishu/channel.ts` 取示例。循环领卡片、发或改、报告；收到点击转给 `hub.answer`。
 
 ## 交付流水线
 
@@ -214,7 +244,7 @@ MCP 服务不区分调用方，都按本人记录（`answer` 记成本人，`emi
 
 ## 放到服务器、加电脑
 
-手机要批卡片、别人的 Webhook 要进来时，把中台放到一台有公网的机器上：
+中台和 worker 可以只在局域网通信，不需要公网。局域网部署按上面的「安装与局域网连接」和安装说明操作。需要从公网访问卡片或接收公网 Webhook 时，再配置公网入口：
 
 1. 服务器上 `sh install.sh --no-service --command true`（这台不跑 Agent，`--command true` 只是占位，第 2 步把 `rules.json` 里的 Agent 换成真的），`config.json` 里 `hub.listen` 用 `127.0.0.1:3350`（要写成 `主机:端口`，IPv6 用 `[地址]:端口`；只写端口或 `:端口` 会被拒绝，避免意外监听所有网卡），`hub.publicUrl` 写公网地址，去掉 `worker`，再 `agent-autoloop service install`。前面放一个做 HTTPS 的反向代理（Caddy、nginx）。
 2. 每台干活的电脑：服务器上 `agent-autoloop key new worker <名字>`，电脑上 `curl -fsSL https://raw.githubusercontent.com/KKKKhazix/agent-autoloop/main/install.sh | sh -s -- join https://中台地址 --worker <名字> --key <密钥>`。`rules.json` 的 Agent 写上对应的 `worker`。
@@ -225,11 +255,11 @@ MCP 服务不区分调用方，都按本人记录（`answer` 记成本人，`emi
 
 ## 日志与恢复
 
-Windows 用任务计划程序在本人登录后启动；通过 SSH 管理时仍用这个登录任务运行 Codex，避免它在 OpenSSH 会话中的沙箱启动限制（见 `INSTALL.md`）；`service install`、`service remove`、`update` 同样适用，更新会重启中台。Windows 自带的 Administrator 账号用「启动」文件夹代替登录任务，`service install` 会打印做法。`doctor` 分别列出启动项注册、监管程序运行、中台 PID 和故障重启配置；注册成功不等于中台已经运行。安装见 `INSTALL.md`。
+Windows 用任务计划程序在本人登录后启动；通过 SSH 管理时仍用这个登录任务运行 Codex，避免它在 OpenSSH 会话中的沙箱启动限制。Windows 自带的 Administrator 账号用「启动」文件夹代替登录任务，`service install` 会打印做法。`doctor` 分别列出启动项注册、监管程序运行、中台 PID 和故障重启配置；注册成功不等于中台已经运行。Linux 安装见随 Skill 附带的 [安装说明](references/install.md)。程序包分发的更新不能直接当作 Git 来源的 `update`。
 
 日志：Windows 在 `%USERPROFILE%\.agent-autoloop\logs\up.log`，macOS 在 `~/.agent-autoloop/logs/up.log`，Linux 运行 `journalctl --user -u agent-autoloop`。
 
-接插件先在专用测试中台验证：`agent-autoloop conformance <地址> --config <测试凭据文件>`。文件里的 `keys` 分别放来源、接单程序、通道、本人密钥；`eventType` 匹配测试规则，`answerer` 在测试通道的允许名单内。检查会写事件和卡片，不指向正在用的中台。协议类型在 `protocol/schema.json`。
+开发插件时先在专用测试中台验证：`agent-autoloop conformance <地址> --config <测试凭据文件>`。文件里的 `keys` 分别放来源、接单程序、通道、本人密钥；`eventType` 匹配测试规则，`answerer` 在测试通道的允许名单内。检查会写事件和卡片，不指向正在用的中台。需要核对类型时读取该测试中台程序包的 `protocol/schema.json`。
 
 `agent-autoloop why 42` 查一轮的事件、规则和回执；`GET /v1/stream?after=42` 供本人客户端按序号续读。备份用 `agent-autoloop backup [目录]`，中台运行时也能做；恢复用 `agent-autoloop restore <目录>`，要先停中台。手工备份要一起保留 `hub.db` 和权限为 0600 的 `master.key`；后者推导轮次和卡片链接的 token。
 

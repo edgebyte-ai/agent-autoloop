@@ -1,6 +1,6 @@
 # 安装说明（写给 Agent）
 
-用户请你装好 Agent 自动化中台。先安装，再走一遍提问和继续处理；能自己做的直接做。
+用户请你装好 Agent 自动化中台。先安装，再走一遍提问和继续处理；能自己做的直接做。用户已提供程序包时，按下面“从已有程序包全新安装”操作，不下载公开 Release。项目创建、工作流定制和日常操作统一使用 [agent-autoloop Skill](skills/agent-autoloop/SKILL.md)。
 
 ## 安装
 
@@ -68,6 +68,10 @@ AGENT_AUTOLOOP_REPO=/path/to/agent-autoloop sh /path/to/agent-autoloop/install.s
 `model`、`effort`、`access` 和 `program` 仍写在 Agent 配置里。同一 worker 的 Codex Agent 使用相同的 `program`。`threadIdleMinutes` 可配置空闲 thread 的卸载时间，默认 120 分钟；卸载后继续时使用 resume，不删除历史。等待人工回答时不发新模型请求，共享 app-server 可以继续运行。
 
 Windows 直接运行原生 CLI，不通过 WSL。普通命令在独立 Job Object 中运行并保存输出、退出码；worker 重启后继续核对原执行。共享 app-server 与 worker 生命周期绑定，worker 退出后清理其进程树，恢复时先核对保存的 thread、turn 和结果。启动或停止状态不能确认时保留未知，不能因父 PID 不见了就报告整棵进程树已停止。
+
+## 从已有程序包全新安装
+
+完整步骤见随 Skill 分发的 [程序包安装手册](skills/agent-autoloop/references/install.md)。目标机器解压已准备好的程序包后直接运行，不需要拉源码或编译；中台与 worker 可以通过局域网 IP 连接。安装 Skill 的操作机不需要源码，也不需要安装中台程序，可通过授权的远程入口执行。
 
 ## 临时 HOME、CI 或没有服务管理器
 

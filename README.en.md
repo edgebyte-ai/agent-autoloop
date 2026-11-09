@@ -36,6 +36,8 @@ curl -fsSL https://raw.githubusercontent.com/KKKKhazix/agent-autoloop/main/insta
 
 The installer and `agent-autoloop update` both install the newest [release](https://github.com/KKKKhazix/agent-autoloop/releases), which has passed every check.
 
+If you already have a prepared application archive, use the [archive installation instructions](INSTALL.md#从已有程序包全新安装). The target machine does not need to clone or compile the code. The hub and workers can communicate over a LAN IP; `publicUrl` does not require a public address. Use the [agent-autoloop skill](skills/agent-autoloop/SKILL.md) to install, create projects, configure and start workflows, check progress, and answer questions.
+
 Then run a real loop with your own agent: ask, finish the round while it waits, answer, and resume:
 
 ```bash

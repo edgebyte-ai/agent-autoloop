@@ -36,6 +36,8 @@ curl -fsSL https://raw.githubusercontent.com/KKKKhazix/agent-autoloop/main/insta
 
 安装和 `agent-autoloop update` 都装最新的 [Release](https://github.com/KKKKhazix/agent-autoloop/releases)，那是通过了全部检查的版本。
 
+已有自己准备好的程序包时，按[程序包安装说明](INSTALL.md#从已有程序包全新安装)直接部署，不需要目标机器拉源码或编译。中台和 worker 可以只用局域网 IP 通信，`publicUrl` 不要求公网地址。让 Agent 安装、新建项目、定制和启动工作流、查进度与回答问题，使用 [agent-autoloop Skill](skills/agent-autoloop/SKILL.md)。
+
 装好后用你本机的 Agent 真实走一遍“提问 → 结束本轮等回复 → 拍板 → 接着干完”：
 
 ```bash
